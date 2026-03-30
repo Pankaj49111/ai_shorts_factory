@@ -1,0 +1,33 @@
+# Ignore virtual environments
+.venv/
+venv/
+env/
+
+# Ignore IDE files
+.idea/
+
+# Ignore Python cache
+__pycache__/
+*.pyc
+
+# Ignore environment variables and credentials
+.env
+credentials/
+
+# Ignore generated media and text files
+*.mp3
+*.mp4
+*.txt
+*.html
+
+# Ignore assets (where media outputs might be stored)
+assets/
+outputTEMP_MPY_wvf_snd.mp4
+
+# Ignore workflows as requested
+.github/
+
+# Exception for requirements.txt
+!requirements.txt
+!AGENTS.md
+!setup_and_deployment.md

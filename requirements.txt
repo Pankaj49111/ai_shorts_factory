@@ -1,0 +1,49 @@
+# Video assembly
+moviepy>=2.0.0
+
+# TTS
+edge-tts>=6.1.0
+
+# Captions (Whisper transcription)
+faster-whisper>=1.0.0
+
+# Gemini (new SDK - do NOT install google-generativeai, it is deprecated)
+google-genai>=1.0.0
+
+# Image processing
+Pillow>=10.0.0
+
+# B-roll fetching
+requests>=2.31.0
+
+# Environment variables
+python-dotenv>=1.0.0
+
+# Trend fetching
+pytrends>=4.9.0
+
+# YouTube API
+google-api-python-client>=2.100.0
+google-auth-httplib2>=0.2.0
+google-auth-oauthlib>=1.1.0
+
+# Timezone handling for scheduling
+pytz>=2024.1
+
+# ---------------------------------------------------------------
+# PyTorch — do NOT install via pip install -r requirements.txt
+# Run this manually instead (CUDA version for GTX 1650):
+#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+#
+# CPU-only fallback (if no GPU):
+#   pip install torch torchvision torchaudio
+# ---------------------------------------------------------------
+
+# NOTE: SadTalker runs in a SEPARATE conda environment (python 3.8)
+# Install steps:
+#   conda create -n sadtalker python=3.8 -y
+#   conda activate sadtalker
+#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+#   conda install ffmpeg -y
+#   cd D:\Python_work\AI_tools\SadTalker
+#   pip install -r requirements.txt
