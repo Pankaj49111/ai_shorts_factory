@@ -9,6 +9,9 @@ Fixes applied (v3):
   - TimeReverse applied to audio-stripped clip to avoid moviepy crash on audio tracks
   - CompositeAudioClip duration managed with .with_duration() not .subclipped()
   - Clip cleanup properly calls .close() in finally blocks
+  - Added defensive checks for zero-dimension clips to prevent MoviePy ValueError.
+  - Changed concatenate_videoclips method to "chain" for lower memory usage.
+  - Added explicit garbage collection after concatenation.
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ import logging
 import os
 import random
 from pathlib import Path
+import gc # Added for garbage collection
 
 log = logging.getLogger(__name__)
 
@@ -75,6 +79,11 @@ def _fit_to_portrait(clip: VideoFileClip) -> VideoFileClip:
  - Exact 9:16       → just resize
  """
  cw, ch = clip.size
+ # Defensive check for zero dimensions
+ if cw == 0 or ch == 0:
+  log.warning(f"Clip has zero dimension: {clip.size}. Skipping fit to portrait.")
+  return clip # Return original clip, it might cause issues later but prevents immediate crash
+
  target_ratio = TARGET_W / TARGET_H
  clip_ratio   = cw / ch
 
@@ -85,6 +94,8 @@ def _fit_to_portrait(clip: VideoFileClip) -> VideoFileClip:
  if clip_ratio > target_ratio:
   # Too wide → crop sides to make it 9:16
   new_w = int(ch * target_ratio)
+  # Ensure new_w is at least 1 to prevent zero-width clips
+  new_w = max(1, new_w)
   x1    = (cw - new_w) // 2
   clip  = clip.with_effects([vfx.Crop(x1=x1, x2=x1 + new_w)])
   return clip.with_effects([vfx.Resize((TARGET_W, TARGET_H))])
@@ -123,6 +134,11 @@ def _load_and_prepare_clip(
 
  try:
   raw: VideoFileClip = VideoFileClip(path, audio=False)   # strip audio early
+  # Add check for zero dimensions
+  if raw.size[0] == 0 or raw.size[1] == 0:
+      log.warning(f"Raw clip {path} has zero dimension: {raw.size}. Skipping.")
+      raw.close()
+      return None
  except Exception as exc:
   log.warning(f"Cannot load {path}: {exc}")
   return None
@@ -130,6 +146,7 @@ def _load_and_prepare_clip(
  try:
   if raw.duration < 2:
    log.warning(f"Clip too short ({raw.duration:.1f}s): {path}")
+   raw.close()
    return None
 
   # Seek offset for cache-reuse variants
@@ -150,8 +167,14 @@ def _load_and_prepare_clip(
    raw = raw.subclipped(0, want)
 
   # Fit to portrait
-  raw = _fit_to_portrait(raw)
-  return raw
+  fitted_clip = _fit_to_portrait(raw)
+  # Defensive check after fitting
+  if fitted_clip.size[0] == 0 or fitted_clip.size[1] == 0:
+   log.warning(f"Fitted clip from {path} has zero dimension: {fitted_clip.size}. Skipping.")
+   fitted_clip.close()
+   return None
+
+  return fitted_clip
 
  except Exception as exc:
   log.warning(f"Failed to prepare clip {path}: {exc}")
@@ -232,12 +255,18 @@ def assemble(
  # ── Proportional trim so total == final_dur ───────────────────────────────
  total_raw = sum(c.duration for c in prepared)
  scale     = final_dur / total_raw if total_raw > 0 else 1.0
- timed: list[VideoFileClip] = []
+ timed: list[VideoFileClip] = [] # Initialize timed here
  for c in prepared:
   new_d = max(c.duration * scale, 0.4)
   timed.append(c.subclipped(0, min(c.duration, new_d)))
 
- video = concatenate_videoclips(timed, method="compose")
+ # Changed method from "compose" to "chain" for lower memory usage
+ video = concatenate_videoclips(timed, method="chain")
+
+ # Explicitly release memory from individual clips after concatenation
+ del timed
+ gc.collect()
+
  if video.duration > final_dur:
   video = video.subclipped(0, final_dur)
 
@@ -298,7 +327,7 @@ def assemble(
  )
 
  # Cleanup
- for c in prepared + timed:
+ for c in prepared: # timed is now empty, but prepared still holds references
   try:
    c.close()
   except Exception:

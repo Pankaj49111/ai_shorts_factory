@@ -41,6 +41,7 @@ try:
     from google_auth_oauthlib.flow import InstalledAppFlow
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
+    from pipeline.youtube_uploader_meta import build_metadata_from_script
     import google.auth.exceptions
 except ImportError as exc:
     raise SystemExit(
@@ -340,25 +341,25 @@ def _build_tags(topic: str, script: str, niche: str, extra: Optional[list[str]] 
     return final[:30]
 
 
-def build_metadata_from_script(
-        topic: str,
-        script: str,
-        category_id: Optional[str] = None,
-        extra_tags: Optional[list[str]] = None,
-) -> dict:
-    """
-    Auto-generate complete YouTube metadata from pipeline outputs.
-    Returns a dict that unpacks into upload_short():
-        upload_short(video_path, **build_metadata_from_script(topic, script))
-    """
-    niche = _detect_niche(topic, script)
-    log.info(f"Detected niche: {niche}")
-    return {
-        "title"      : _build_title(topic),
-        "description": _build_description(topic, script, niche),
-        "tags"       : _build_tags(topic, script, niche, extra_tags),
-        "category_id": category_id or CATEGORY.get(niche, CATEGORY["education"]),
-    }
+# def build_metadata_from_script(
+#         topic: str,
+#         script: str,
+#         category_id: Optional[str] = None,
+#         extra_tags: Optional[list[str]] = None,
+# ) -> dict:
+#     """
+#     Auto-generate complete YouTube metadata from pipeline outputs.
+#     Returns a dict that unpacks into upload_short():
+#         upload_short(video_path, **build_metadata_from_script(topic, script))
+#     """
+#     niche = _detect_niche(topic, script)
+#     log.info(f"Detected niche: {niche}")
+#     return {
+#         "title"      : _build_title(topic),
+#         "description": _build_description(topic, script, niche),
+#         "tags"       : _build_tags(topic, script, niche, extra_tags),
+#         "category_id": category_id or CATEGORY.get(niche, CATEGORY["education"]),
+#     }
 
 
 # =============================================================================

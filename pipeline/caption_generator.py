@@ -1,5 +1,6 @@
 from faster_whisper import WhisperModel
 from moviepy import TextClip, CompositeVideoClip, ColorClip
+import moviepy.video.fx as vfx
 import os
 
 # ---------------------------------------------------------------------------
@@ -83,8 +84,11 @@ def transcribe_audio(audio_path, model_size="base"):
         if not segment.words:
             continue
         for w in segment.words:
+            w_text = w.word.strip()
+            if not w_text:
+                continue
             words.append({
-                "text":        w.word.strip(),
+                "text":        w_text,
                 "start":       w.start,
                 "end":         w.end,
                 "probability": w.probability,
@@ -123,6 +127,10 @@ def _row_composite(word_color_pairs, font, duration, start_time, frame_w=1080, f
     word_clips = []
     x_offset   = 0
     for word_text, color in word_color_pairs:
+        # Avoid creating 0-width text clips
+        if not word_text.strip():
+            continue
+            
         wc = TextClip(
             font=font, text=word_text + " ",
             font_size=FONT_SIZE,
@@ -131,17 +139,34 @@ def _row_composite(word_color_pairs, font, duration, start_time, frame_w=1080, f
             stroke_width=STROKE_WIDTH,
             method="label",
         )
+        if wc.size[0] == 0 or wc.size[1] == 0:
+            continue
+            
         word_clips.append((wc, x_offset))
         x_offset += wc.size[0]
 
+    if not word_clips:
+        return None
+
     total_w = x_offset
-    start_x = max(0, (frame_w - total_w) // 2)
+    
+    # Scale down if the row is too wide (prevents MoviePy out-of-bounds ValueError)
+    margin = 80
+    scale_factor = 1.0
+    if total_w > frame_w - margin:
+        scale_factor = (frame_w - margin) / total_w
+        
+    start_x = max(margin // 2, (frame_w - int(total_w * scale_factor)) // 2)
     y_px    = int(Y_POSITION * frame_h)
 
-    # Position each word clip at the correct x,y pixel coordinates
-    # with bounds checking to prevent clipping
     positioned = []
     for wc, x_off in word_clips:
+        if scale_factor != 1.0:
+            new_w = max(1, int(wc.size[0] * scale_factor))
+            new_h = max(1, int(wc.size[1] * scale_factor))
+            wc = wc.with_effects([vfx.Resize((new_w, new_h))])
+            x_off = int(x_off * scale_factor)
+            
         # Vertically center text, but ensure it stays within frame bounds
         text_half_h = wc.size[1] // 2
         final_y = y_px - text_half_h
@@ -165,17 +190,33 @@ def _row_composite(word_color_pairs, font, duration, start_time, frame_w=1080, f
 
 def _make_simple_clip(group, font):
     text     = " ".join(w["text"] for w in group["words"])
+    if not text.strip():
+        return None
+        
     duration = max(0.05, group["end"] - group["start"])
+    wc = TextClip(
+        font=font, text=text,
+        font_size=FONT_SIZE,
+        color=COLOR_ACTIVE,
+        stroke_color=STROKE_COLOR,
+        stroke_width=STROKE_WIDTH,
+        method="label",
+        text_align="center",
+    )
+    if wc.size[0] == 0 or wc.size[1] == 0:
+        return None
+        
+    # Scale down if too wide
+    frame_w = 1080
+    margin = 80
+    if wc.size[0] > frame_w - margin:
+        scale_factor = (frame_w - margin) / wc.size[0]
+        new_w = max(1, int(wc.size[0] * scale_factor))
+        new_h = max(1, int(wc.size[1] * scale_factor))
+        wc = wc.with_effects([vfx.Resize((new_w, new_h))])
+        
     return (
-        TextClip(
-            font=font, text=text,
-            font_size=FONT_SIZE,
-            color=COLOR_ACTIVE,
-            stroke_color=STROKE_COLOR,
-            stroke_width=STROKE_WIDTH,
-            method="label",
-            text_align="center",
-        )
+        wc
         .with_duration(duration)
         .with_start(group["start"])
         .with_position(("center", Y_POSITION), relative=True)
@@ -197,7 +238,9 @@ def _make_karaoke_clips(group, font):
                 color = "#666666" if w["probability"] < CONFIDENCE_THRESHOLD else COLOR_INACTIVE
             pairs.append((w["text"], color))
 
-        clips.append(_row_composite(pairs, font, duration, active_word["start"]))
+        clip = _row_composite(pairs, font, duration, active_word["start"])
+        if clip:
+            clips.append(clip)
 
     return clips
 
@@ -208,13 +251,15 @@ def _make_highlight_clips(group, font):
     duration    = max(0.05, group["end"] - group["start"])
 
     if not any(_is_power_word(w["text"]) for w in group_words):
-        return [_make_simple_clip(group, font)]
+        clip = _make_simple_clip(group, font)
+        return [clip] if clip else []
 
     pairs = [
         (w["text"], COLOR_KEYWORD if _is_power_word(w["text"]) else COLOR_ACTIVE)
         for w in group_words
     ]
-    return [_row_composite(pairs, font, duration, group["start"])]
+    clip = _row_composite(pairs, font, duration, group["start"])
+    return [clip] if clip else []
 
 
 # ---------------------------------------------------------------------------
@@ -244,7 +289,9 @@ def build_caption_clips(audio_path, video_size=(1080, 1920), model_size="base", 
         elif CAPTION_MODE == MODE_HIGHLIGHT:
             clips.extend(_make_highlight_clips(group, font))
         else:
-            clips.append(_make_simple_clip(group, font))
+            clip = _make_simple_clip(group, font)
+            if clip:
+                clips.append(clip)
 
     print(f"  {len(clips)} caption clips built (mode: {CAPTION_MODE})")
     return clips

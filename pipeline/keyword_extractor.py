@@ -8,14 +8,14 @@ load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 
-def extract_keywords(script, count=5):
+def extract_pexels_queries(script, count=5):
     if GEMINI_API_KEY:
-        return _extract_with_gemini(script, count)
+        return _extract_pexels_with_gemini(script, count)
     else:
-        return _extract_fallback(script, count)
+        return _extract_pexels_fallback(script, count)
 
 
-def _extract_with_gemini(script, count):
+def _extract_pexels_with_gemini(script, count):
     client = genai.Client(api_key=GEMINI_API_KEY)
 
     prompt = f"""
@@ -51,7 +51,7 @@ Script:
     return queries
 
 
-def _extract_fallback(script, count):
+def _extract_pexels_fallback(script, count):
     STOPWORDS = {
         "this", "that", "with", "from", "they", "them", "their",
         "have", "been", "will", "would", "could", "should", "about",
@@ -73,3 +73,70 @@ def _extract_fallback(script, count):
 
     print(f"  Pexels queries (fallback): {keywords}")
     return keywords
+
+
+def extract_youtube_tags(script, count=10):
+    if GEMINI_API_KEY:
+        return _extract_youtube_tags_with_gemini(script, count)
+    else:
+        return _extract_youtube_tags_fallback(script, count)
+
+
+def _extract_youtube_tags_with_gemini(script, count):
+    client = genai.Client(api_key=GEMINI_API_KEY)
+
+    prompt = f"""
+You are an expert YouTube SEO specialist.
+
+Given the following video script, generate exactly {count} highly relevant and concise
+YouTube tags.
+
+Rules:
+- Each tag should be a single word or a short phrase (max 3 words).
+- Tags should be directly related to the content of the script.
+- Avoid generic tags like "video", "short", "youtube".
+- Avoid special characters.
+- Return ONLY the tags, one per line, no numbering, no explanation.
+
+Script:
+{script}
+"""
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt
+    )
+    raw = response.text.strip()
+
+    tags = []
+    for line in raw.splitlines():
+        line = re.sub(r"^[\d\.\-\*\s]+", "", line).strip()
+        if line:
+            tags.append(line)
+
+    tags = tags[:count]
+    print(f"  YouTube tags: {tags}")
+    return tags
+
+
+def _extract_youtube_tags_fallback(script, count):
+    STOPWORDS = {
+        "this", "that", "with", "from", "they", "them", "their",
+        "have", "been", "will", "would", "could", "should", "about",
+        "every", "each", "some", "like", "more", "your", "follow",
+        "means", "actually", "slightly", "briefly", "almost", "better",
+        "critical", "different", "anything", "wonder", "events",
+        "short", "long", "term", "type", "types", "items", "hold",
+        "youtube", "video", "shorts", "short", "fact", "facts", "daily"
+    }
+
+    words = re.findall(r'\b[a-zA-Z]{2,}\b', script.lower())
+    seen = set()
+    tags = []
+    for w in words:
+        if w not in STOPWORDS and w not in seen:
+            seen.add(w)
+            tags.append(w)
+        if len(tags) == count:
+            break
+    print(f"  YouTube tags (fallback): {tags}")
+    return tags
