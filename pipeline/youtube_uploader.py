@@ -7,14 +7,14 @@ One-time local setup
 ---------------------
 1.  Google Cloud Console → new project → Enable "YouTube Data API v3"
 2.  Credentials → OAuth 2.0 Client ID → Desktop App → download JSON
-    → save as  credentials/client_secret.json
+    → save as  credentials/client_secrets.json
 3.  python pipeline/youtube_uploader.py
     Browser opens once; token saved to credentials/token.json.
     All future pipeline runs are fully silent.
 
 .env
 ----
-YOUTUBE_CLIENT_SECRET_PATH   default: credentials/client_secret.json
+YOUTUBE_CLIENT_SECRETS_PATH   default: credentials/client_secrets.json
 YOUTUBE_TOKEN_PATH            default: credentials/token.json
 YOUTUBE_DEFAULT_PRIVACY       public | unlisted | private  (default: public)
 YOUTUBE_CHANNEL_NICHE         e.g. "science facts"
@@ -108,11 +108,11 @@ class QuotaExceededError(Exception):
 
 def is_youtube_configured() -> bool:
     """
-    FIX: Returns True only if client_secret.json exists.
+    FIX: Returns True only if client_secrets.json exists.
     Called once upfront by pipeline_runner so we never retry a config error.
     """
     secret_path = Path(
-        os.getenv("YOUTUBE_CLIENT_SECRET_PATH", "credentials/client_secret.json")
+        os.getenv("YOUTUBE_CLIENT_SECRETS_PATH", "credentials/client_secrets.json")
     )
     if not secret_path.exists():
         log.warning(
@@ -133,12 +133,12 @@ def is_youtube_configured() -> bool:
 # =============================================================================
 
 def _get_credentials() -> Credentials:
-    secret_path = Path(os.getenv("YOUTUBE_CLIENT_SECRET_PATH", "credentials/client_secret.json"))
+    secret_path = Path(os.getenv("YOUTUBE_CLIENT_SECRETS_PATH", "credentials/client_secrets.json"))
     token_path  = Path(os.getenv("YOUTUBE_TOKEN_PATH", "credentials/token.json"))
 
     if not secret_path.exists():
         raise FileNotFoundError(
-            f"client_secret.json not found at '{secret_path}'.\n"
+            f"client_secrets.json not found at '{secret_path}'.\n"
             "Run  python pipeline/youtube_uploader.py  after placing the file."
         )
 

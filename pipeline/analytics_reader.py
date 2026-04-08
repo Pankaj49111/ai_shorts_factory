@@ -140,7 +140,7 @@ def _fetch_video_stats(
     batch_size = 50
     for i in range(0, len(video_ids), batch_size):
         batch = video_ids[i : i + batch_size]
-        ids_str = ",".join(batch)
+        ids_str = ";".join(batch)
         try:
             response = (
                 analytics_svc.reports()
