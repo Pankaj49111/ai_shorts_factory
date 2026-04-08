@@ -6,7 +6,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent))
 
 from pipeline_runner import _get_next_publish_time
-from pipeline.youtube_uploader import upload_short
+from pipeline.youtube_uploader import upload_short, QuotaExceededError
 
 def retry_upload(run_dir_str):
     run_dir = Path(run_dir_str)
@@ -31,8 +31,8 @@ def retry_upload(run_dir_str):
 
     print(f"Retrying upload for: {yt_meta['title']}")
     
-    # We will use the fixed _get_next_publish_time() from pipeline_runner
-    publish_at_iso = _get_next_publish_time()
+    # We do not commit the time yet. We just get the proposed time.
+    publish_at_iso = _get_next_publish_time(commit=False)
     print(f"Using scheduled time: {publish_at_iso}")
     
     try:
@@ -46,6 +46,10 @@ def retry_upload(run_dir_str):
             notify_subscribers = False,
             publish_at         = publish_at_iso,
         )
+        
+        # If we get here, upload succeeded! Now we commit the time so the next video gets the next slot.
+        _get_next_publish_time(commit=True)
+
         print(f"\nSuccess! Uploaded: https://www.youtube.com/shorts/{video_id}")
         
         # Update meta.json with the successful upload info
@@ -54,6 +58,9 @@ def retry_upload(run_dir_str):
         with open(meta_path, "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2, ensure_ascii=False)
             
+    except QuotaExceededError as q_err:
+        print(f"\nUpload failed: ⚠️ {q_err}")
+        print("YouTube quota limit reached for today. Please try again tomorrow.")
     except Exception as exc:
         print(f"\nUpload failed: {exc}")
 

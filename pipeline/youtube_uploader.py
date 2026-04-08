@@ -98,6 +98,9 @@ _NICHE_HASHTAGS: dict[str, str] = {
     "news"    : "#News #WorldNews #BreakingNews #CurrentEvents",
 }
 
+class QuotaExceededError(Exception):
+    """Raised when YouTube daily upload limit is reached."""
+    pass
 
 # =============================================================================
 # Pre-flight check  (called by pipeline_runner before attempting upload)
@@ -184,7 +187,9 @@ def _upload_with_retry(youtube, body: dict, media: MediaFileUpload) -> str:
             if status:
                 log.info(f"  Upload progress: {int(status.progress() * 100)}%")
         except HttpError as e:
-            if e.resp.status in RETRIABLE_CODES:
+            if e.resp.status == 400 and "uploadLimitExceeded" in str(e):
+                raise QuotaExceededError("YouTube daily upload limit exceeded.") from e
+            elif e.resp.status in RETRIABLE_CODES:
                 error = f"HTTP {e.resp.status}"
             else:
                 raise

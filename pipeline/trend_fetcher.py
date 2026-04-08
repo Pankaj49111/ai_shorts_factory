@@ -34,6 +34,22 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 log = logging.getLogger("pipeline.trend_fetcher")
 
 # ─────────────────────────────────────────────────────────────────────────────
+# urllib3 2.0+ compatibility patch for pytrends
+# ─────────────────────────────────────────────────────────────────────────────
+import urllib3
+from urllib3.util.retry import Retry
+
+# Pytrends passes `method_whitelist` to Retry, which was renamed to `allowed_methods` in urllib3 v2.0
+_original_retry_init = Retry.__init__
+
+def _patched_retry_init(self, *args, **kwargs):
+    if "method_whitelist" in kwargs:
+        kwargs["allowed_methods"] = kwargs.pop("method_whitelist")
+    _original_retry_init(self, *args, **kwargs)
+
+Retry.__init__ = _patched_retry_init
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Curated fallback topic banks for STRICT niches
 # ─────────────────────────────────────────────────────────────────────────────
 _TOPIC_BANKS: dict[str, list[str]] = {

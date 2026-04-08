@@ -21,7 +21,7 @@ import sys
 import time
 from datetime import datetime, timedelta, time as dt_time, date, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 import math
 
 from pipeline.trend_fetcher       import get_trending_topic
@@ -32,7 +32,7 @@ from pipeline.keyword_extractor   import extract_pexels_queries
 from pipeline.broll_fetcher       import download_broll
 from pipeline.video_assembler     import assemble
 from pipeline.topic_classifier    import CLUSTER_CATEGORY_MAP, get_cluster_display_name
-from pipeline.youtube_uploader    import upload_short, is_youtube_configured
+from pipeline.youtube_uploader    import upload_short, is_youtube_configured, QuotaExceededError
 from pipeline.youtube_uploader_meta import build_metadata_from_script
 from dotenv import load_dotenv
 
@@ -66,7 +66,7 @@ BROLL_RETRY_WAIT = 15
 BROLL_MAX_RETRY  = 3
 
 WHISPER_MODEL = "base"
-CAPTION_MODE  = "karaoke"
+CAPTION_MODE  = "beast"
 
 POPULAR_VOICES = [
     "en-US-JennyNeural", "en-US-GuyNeural", "en-US-ChristopherNeural",
@@ -183,7 +183,12 @@ def _append_upload_log(timestamp: str, topic: str, video_id: str, cluster: str):
     path.open("a", encoding="utf-8").write(f"{timestamp},{topic},{video_id},{url},{cluster}\n")
     log.info(f"Upload logged: {path}")
 
-def _get_next_publish_time() -> str:
+def _get_next_publish_time(commit: bool = True) -> str:
+    """
+    Get the next available publish slot.
+    If commit=True, it actually updates LAST_SCHEDULED_FILE (use only on successful upload).
+    If commit=False, it just previews the time (use for dry runs / before upload completes).
+    """
     current_utc_dt = datetime.now(timezone.utc)
     last_scheduled_utc: Optional[datetime] = None
     if LAST_SCHEDULED_FILE.exists():
@@ -228,8 +233,10 @@ def _get_next_publish_time() -> str:
         if next_slot_idx == 0: next_publish_ist += timedelta(days=1)
         next_publish_ist = next_publish_ist.replace(hour=SCHEDULE_TIMES_IST[next_slot_idx].hour, minute=SCHEDULE_TIMES_IST[next_slot_idx].minute, second=0, microsecond=0)
 
-    log.info(f"Next publish: {next_publish_ist.strftime('%Y-%m-%d %H:%M IST')} (UTC: {next_publish_ist.astimezone(timezone.utc).isoformat(timespec='seconds')})")
-    LAST_SCHEDULED_FILE.write_text(next_publish_ist.astimezone(timezone.utc).isoformat(timespec="seconds"), encoding="utf-8")
+    if commit:
+        log.info(f"Next publish: {next_publish_ist.strftime('%Y-%m-%d %H:%M IST')} (UTC: {next_publish_ist.astimezone(timezone.utc).isoformat(timespec='seconds')})")
+        LAST_SCHEDULED_FILE.write_text(next_publish_ist.astimezone(timezone.utc).isoformat(timespec="seconds"), encoding="utf-8")
+    
     return next_publish_ist.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 # =============================================================================
@@ -397,15 +404,25 @@ def run_pipeline():
         log.info("STEP 7 — Uploading to YouTube")
         for attempt in range(3):
             try:
-                publish_at_iso = _get_next_publish_time()
+                # We do NOT commit the time yet. We just get the proposed time.
+                publish_at_iso = _get_next_publish_time(commit=False)
                 video_id = upload_short(video_path=str(output_path), title=yt_meta["title"], description=yt_meta["description"], tags=yt_meta["tags"], category_id=youtube_category, privacy="private", notify_subscribers=NOTIFY_SUBSCRIBERS, publish_at=publish_at_iso)
+                
+                # If we get here, upload succeeded! Now we commit the time so the next video gets the next slot.
+                _get_next_publish_time(commit=True)
+
                 log.info(f"Uploaded: https://www.youtube.com/shorts/{video_id}")
                 _append_upload_log(timestamp, topic, video_id, cluster)
                 break
+            except QuotaExceededError as q_err:
+                log.warning(f"⚠️ {q_err}")
+                log.warning("The video was created successfully but could not be uploaded today.")
+                log.warning(f"Use `python retry_upload.py {run_dir}` tomorrow.")
+                break # Don't retry if quota is exceeded
             except Exception as exc:
                 log.error(f"Upload error ({attempt+1}): {exc}")
                 if attempt < 2: time.sleep(20)
-        if not video_id: log.error("Upload failed after 3 attempts. Video retained locally.")
+        if not video_id: log.error("Upload failed. Video retained locally.")
     elif UPLOAD_TO_YOUTUBE and not yt_ready:
         log.info("STEP 7 — Skipped (YouTube credentials not configured).")
     else:

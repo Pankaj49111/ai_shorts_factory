@@ -24,6 +24,7 @@ import logging
 import os
 import re
 import time
+import random
 
 log = logging.getLogger("pipeline.script_generator")
 
@@ -142,9 +143,9 @@ def _build_prompt(topic: str, cluster: str) -> str:
     )
 
 
-def _call_gemini(prompt: str, model: str) -> str:
+def _call_gemini(prompt: str, model: str, temperature: float = 0.75) -> str:
     """
-    Call Gemini API with the given model.
+    Call Gemini API with the given model and temperature.
     Explicitly disables thinking tokens (budget=0) to prevent
     gemini-2.5-flash from consuming output budget on internal reasoning.
     """
@@ -170,7 +171,7 @@ def _call_gemini(prompt: str, model: str) -> str:
     config_with_no_thinking = None
     try:
         config_with_no_thinking = types.GenerateContentConfig(
-            temperature=0.75,
+            temperature=temperature,
             max_output_tokens=3000,
             thinking_config=types.ThinkingConfig(thinking_budget=0),
         )
@@ -178,7 +179,7 @@ def _call_gemini(prompt: str, model: str) -> str:
         pass   # ThinkingConfig not available in this SDK version
 
     config_default = types.GenerateContentConfig(
-        temperature=0.75,
+        temperature=temperature,
         max_output_tokens=3000,
     )
 
@@ -283,15 +284,24 @@ def generate_script(topic: str, cluster: str = "SCIENCE") -> str:
     for model in _MODELS:
         log.info(f"[script_gen] Trying model: {model}")
         prompt = base_prompt
+        
+        # Pick a random temperature between 0.75 and 0.95 for the initial run
+        current_temp = round(random.uniform(0.75, 0.95), 2)
 
         for attempt in range(1, 5):
+            # Fall back to a safer, fixed temperature for retries
+            if attempt > 1:
+                current_temp = 0.75
+                
+            log.info(f"[script_gen] Generation attempt {attempt} with temperature {current_temp}")
+
             try:
-                raw    = _call_gemini(prompt, model)
+                raw    = _call_gemini(prompt, model, temperature=current_temp)
                 script = _clean_output(raw)
                 wc     = _word_count(script)
 
                 log.info(
-                    f"[script_gen] {model} attempt {attempt} → {wc} words"
+                    f"[script_gen] {model} attempt {attempt} (temp {current_temp}) → {wc} words"
                 )
 
                 if wc > best_wc:
@@ -300,7 +310,7 @@ def generate_script(topic: str, cluster: str = "SCIENCE") -> str:
 
                 # FIX: Use the new min/max word counts for the acceptance criteria
                 if min_words <= wc <= max_words + 5: # Allow a small buffer
-                    log.info(f"[script_gen] Accepted: {wc} words | {model}")
+                    log.info(f"[script_gen] Accepted: {wc} words | {model} | temp {current_temp}")
                     return script
 
                 # Show raw preview only when failing to help debug
