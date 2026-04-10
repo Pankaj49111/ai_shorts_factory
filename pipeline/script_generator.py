@@ -1,6 +1,6 @@
 """
-script_generator.py — Viral Shorts Script Generator v4
-=======================================================
+script_generator.py — Viral Shorts Script Generator v4 (Viral Optimized)
+========================================================================
 Root cause of v2/v3 failures (now fixed):
   The google-genai SDK was routing "gemini-2.0-flash" → "gemini-2.5-flash",
   which is a *thinking model*. Thinking tokens consumed most of the
@@ -9,7 +9,7 @@ Root cause of v2/v3 failures (now fixed):
 
 Fixes applied:
   1. Primary model: gemini-2.5-flash  (recommended for fast script generation)
-     Fallback model: gemini-2.5-pro      (paid, highest quality)
+     Fallback models: gemini-2.0-flash-lite, gemini-1.5-flash
   2. thinking_budget=0 injected wherever supported (kills thinking tokens)
   3. max_output_tokens raised to 3000 (generous headroom for both models)
   4. Prompt is self-contained in a single string (no system_instruction quirks)
@@ -30,29 +30,28 @@ log = logging.getLogger("pipeline.script_generator")
 
 # ── Models to try in order ────────────────────────────────────────────────────
 # gemini-2.5-flash: recommended for fast script generation
-# gemini-2.5-pro:   highest quality fallback
-_MODELS = ["gemini-2.5-flash", "gemini-2.5-pro"]
+_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"]
 
 # ── Cluster context + CTA ─────────────────────────────────────────────────────
 _CLUSTER_CONTEXT: dict[str, str] = {
-    "AI_TECH": (
-        "NICHE: AI and technology facts. Reference real AI models, companies, or "
-        "research findings. Translate jargon into plain English. Frame AI facts "
-        "around human impact: jobs, privacy, creativity, health."
+    "TECH_SECRETS": (
+        "NICHE: Consumer tech secrets, privacy, and hardware glitches. "
+        "Reference real hidden features in smartphones, consoles (PS5/Xbox), or data tracking. "
+        "NO abstract software, NO AI, NO ChatGPT. Focus on physical tech users hold in their hands."
     ),
-    "PSYCHOLOGY": (
-        "NICHE: Psychology and brain science. Reference neuroscience or behavioural "
-        "studies. Connect abstract science to everyday experiences like sleep, "
-        "decisions, relationships, anxiety."
+    "BRAIN_SCIENCE": (
+        "NICHE: Neurological science and physical brain oddities. "
+        "Reference real neuroscience studies about memory, sleep, or physical brain changes. "
+        "NO vague behavioral psychology or mental health advice. Focus on the brain as a biological machine."
     ),
-    "FINANCE": (
-        "NICHE: Personal finance and money facts. Reference real financial mechanisms. "
-        "Focus on compound interest, debt, saving rate, salary negotiation. "
-        "Globally applicable — no country-specific tax laws or stock picks."
+    "BIOLOGY_NATURE": (
+        "NICHE: Bizarre animal adaptations and human body oddities. "
+        "Reference real, shocking facts about insects, deep sea creatures, parasites, or human organs. "
+        "Make it sound like a sci-fi horror movie, but keep it 100% scientifically accurate."
     ),
     "SCIENCE": (
         "NICHE: Science and nature mysteries. Reference real phenomena, discoveries, "
-        "or counterintuitive facts about the universe, biology, physics, chemistry. "
+        "or counterintuitive facts about the universe, physics, or chemistry. "
         "Use vivid analogies to make complex ideas tangible."
     ),
     "VIRAL_FACTS_1": (
@@ -68,12 +67,12 @@ _CLUSTER_CONTEXT: dict[str, str] = {
 }
 
 _CLUSTER_CTA: dict[str, str] = {
-    "AI_TECH":    "Follow for daily AI facts that nobody else covers.",
-    "PSYCHOLOGY": "Follow for daily psychology facts that will change how you think.",
-    "FINANCE":    "Follow for daily money facts that schools never taught you.",
-    "SCIENCE":    "Follow for daily science facts that will blow your mind.",
-    "VIRAL_FACTS_1": "Follow for daily bizarre facts that actually exist.",
-    "VIRAL_FACTS_2": "Follow for daily bizarre facts that actually exist.",
+    "TECH_SECRETS":   "Follow for daily tech secrets they don't want you to know.",
+    "BRAIN_SCIENCE":  "Follow for daily brain facts that will blow your mind.",
+    "BIOLOGY_NATURE": "Follow for daily bizarre biology facts you won't believe.",
+    "SCIENCE":        "Follow for daily science facts that actually exist.",
+    "VIRAL_FACTS_1":  "Follow for daily bizarre facts that actually exist.",
+    "VIRAL_FACTS_2":  "Follow for daily bizarre facts that actually exist.",
 }
 
 # ── Prompt ────────────────────────────────────────────────────────────────────
@@ -90,20 +89,19 @@ TOPIC: "{topic}"
 ABSOLUTE REQUIREMENTS:
 - Output ONLY the spoken script. Nothing else. No labels, no markdown, no \
 "Hook:", no "Section:", no word counts, no explanations, no preamble.
-- Total word count: EXACTLY 85 to 105 words. Not 30. Not 50. Not 120. \
-Between 85 and 105 words.
+- Total word count: EXACTLY 70 to 105 words. Not 30. Not 50. Not 120. \
+Between 70 and 105 words.
 - Short sentences. Maximum 12 words per sentence.
 - Plain English. No idioms. No cultural references.
 - Do NOT start with the topic name.
 
 STRUCTURE (write as plain spoken paragraphs — NO section labels):
 1. Opening hook (8-14 words): Start with one of these:
-   "Nobody talks about this, but..."
-   "You have been doing [X] wrong your entire life."
-   "What they never teach you about [X]."
-   "Scientists just discovered why you [action]."
-   "The hidden reason [X] makes you [Y]."
-   "[Specific number]. Here is why."
+   "You have been wrong about [X] your whole life."
+   "The real reason [X] will genuinely surprise you."
+   "[Specific number or fact]. Science finally has an answer."
+   "Nobody ever explains why [X] actually happens."
+   "Most people learn this too late — [surprising claim]."
 
 2. Core insight (30-50 words): Give the main fact or mechanism. Include 1 or 2 \
 specific numbers, named studies, or precise details. Build toward the payoff.
@@ -117,19 +115,14 @@ What viewers will save or share. End with a memorable sentence.
 EXAMPLE of correct format and correct length — notice it is flowing prose with \
 NO labels, starts with a hook, ends with the CTA:
 
-Nobody talks about this, but your brain deletes memories on purpose. \
-Every time you sleep, your brain runs a pruning process. It removes weak \
-connections and strengthens important ones. A 2019 study at Oxford found that \
-people who slept less than six hours lost up to 40 percent of new memories \
-formed that day. This is not a flaw. It is a feature. Your brain prioritises \
-survival information over trivia. The problem is that your brain cannot always \
-tell the difference. Important lessons, creative ideas, and emotional insights \
-get deleted alongside useless noise. Writing things down before sleep is the \
-only reliable way to protect what matters. Follow for daily psychology facts \
-that will change how you think.
+You have been wrong about octopus intelligence your whole life. Octopuses have \
+three hearts and nine brains — one central brain plus one for each arm. A 2021 \
+Cambridge study found each arm solves problems independently, even while \
+disconnected from the central brain. They are not one creature thinking — they \
+are nine creatures cooperating. Follow for more mind-blowing facts every single day.
 
 Now write the script for the topic "{topic}". \
-Remember: 85-105 words, no labels, spoken prose only.\
+Remember: 70-105 words, no labels, spoken prose only.\
 """
 
 
@@ -261,7 +254,7 @@ def _word_count(text: str) -> int:
 
 def generate_script(topic: str, cluster: str = "SCIENCE") -> str:
     """
-    Generate a 85-105 word YouTube Shorts script for the given topic.
+    Generate a 70-105 word YouTube Shorts script for the given topic.
 
     Args:
         topic:   Topic string to write about.
@@ -278,7 +271,7 @@ def generate_script(topic: str, cluster: str = "SCIENCE") -> str:
     best_wc     = 0
 
     # Define word count targets consistent with pipeline_runner.py
-    min_words = 85
+    min_words = 70
     max_words = 105
 
     for model in _MODELS:

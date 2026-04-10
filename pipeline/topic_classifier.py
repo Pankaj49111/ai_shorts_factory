@@ -1,21 +1,21 @@
 """
-topic_classifier.py — Zero-API niche cluster classifier
+topic_classifier.py — Zero-API niche cluster classifier (Viral Optimized)
 =========================================================
 Maps any topic string to one of 4 niche clusters using keyword
 matching + scoring. No external API required.
 
 Clusters:
-  AI_TECH      → Science & Tech (Category 28) · CPM $15-22
-  PSYCHOLOGY   → Education (Category 27)      · CPM $2-5
-  FINANCE      → Education (Category 27)      · CPM $4-8
-  SCIENCE      → Science & Tech (Category 28) · CPM $3-8
-  VIRAL_FACTS_1→ Entertainment (Category 24)  · Broad Appeal
-  VIRAL_FACTS_2→ Entertainment (Category 24)  · Broad Appeal
+  TECH_SECRETS   → Science & Tech (Category 28)
+  BRAIN_SCIENCE  → Education (Category 27)
+  BIOLOGY_NATURE → Education (Category 27)
+  SCIENCE        → Science & Tech (Category 28)
+  VIRAL_FACTS_1  → Entertainment (Category 24)
+  VIRAL_FACTS_2  → Entertainment (Category 24)
 
 Usage:
     from pipeline.topic_classifier import classify_topic, CLUSTER_CATEGORY_MAP
-    cluster = classify_topic("why your brain makes bad decisions at night")
-    # → "PSYCHOLOGY"
+    cluster = classify_topic("why your phone tracks you")
+    # → "TECH_SECRETS"
 """
 
 from __future__ import annotations
@@ -23,10 +23,10 @@ import re
 
 # ── Cluster → YouTube category ID ────────────────────────────────────────────
 CLUSTER_CATEGORY_MAP: dict[str, str] = {
-    "AI_TECH":       "28",   # Science & Technology
-    "PSYCHOLOGY":    "27",   # Education
-    "FINANCE":       "27",   # Education
-    "SCIENCE":       "28",   # Science & Technology (Changed from 27 to 28)
+    "TECH_SECRETS":  "28",   # Science & Technology
+    "BRAIN_SCIENCE": "27",   # Education
+    "BIOLOGY_NATURE":"27",   # Education
+    "SCIENCE":       "28",   # Science & Technology
     "VIRAL_FACTS_1": "24",   # Entertainment
     "VIRAL_FACTS_2": "24",   # Entertainment
 }
@@ -35,77 +35,48 @@ CLUSTER_CATEGORY_MAP: dict[str, str] = {
 # Format: {keyword: weight}   higher weight = stronger signal
 _CLUSTER_KEYWORDS: dict[str, dict[str, int]] = {
 
-    "AI_TECH": {
-        "ai": 3, "artificial intelligence": 3, "chatgpt": 3, "gpt": 3,
-        "machine learning": 3, "deep learning": 3, "neural network": 3,
-        "robot": 2, "automation": 2, "algorithm": 2, "tech": 2,
-        "software": 2, "app": 1, "smartphone": 2, "computer": 2,
-        "quantum": 3, "semiconductor": 2, "chip": 2, "data": 2,
-        "cyber": 2, "hack": 2, "code": 2, "programming": 2,
-        "openai": 3, "google": 1, "meta ai": 3, "llm": 3,
-        "midjourney": 3, "stable diffusion": 3, "prompt": 2,
-        "model": 2, "training": 2, "dataset": 2, "silicon": 2,
-        "digital": 1, "internet": 1, "social media": 1, "privacy": 2,
-        "surveillance": 2, "deepfake": 3, "voice clone": 3,
-        "autonomous": 2, "self-driving": 3, "tesla": 2, "drone": 2,
-        "spacex": 2, "elon": 1, "tech company": 2, "startup": 1,
-        "crypto": 2, "blockchain": 2, "nft": 2, "virtual reality": 2,
-        "augmented reality": 2, "metaverse": 2, "wearable": 2,
+    "TECH_SECRETS": {
+        "phone": 3, "smartphone": 3, "camera": 2, "tracking": 3,
+        "privacy": 3, "data": 2, "location": 3, "wifi": 3,
+        "bluetooth": 2, "microphone": 2, "hacked": 3, "secret": 2,
+        "hidden feature": 3, "algorithm": 2, "battery": 2, "screen": 2,
+        "device": 2, "app": 2, "console": 3, "ps4": 3, "ps5": 3,
+        "xbox": 2, "overheating": 3, "gadget": 2, "technology": 2,
+        "surveillance": 3, "cyber": 2, "tech company": 2, "hardware": 3,
+        "glitch": 2, "password": 2, "security": 3, "internet": 1,
     },
 
-    "PSYCHOLOGY": {
-        "brain": 3, "psychology": 3, "mental": 3, "mind": 3,
-        "neuroscience": 3, "behavior": 3, "behaviour": 3, "habit": 2,
-        "emotion": 3, "anxiety": 3, "stress": 3, "depression": 3,
-        "trauma": 3, "therapy": 2, "cognitive": 3, "memory": 3,
-        "sleep": 2, "dream": 2, "decision": 2, "bias": 3,
-        "manipulation": 2, "persuasion": 2, "influence": 2,
-        "subconscious": 3, "unconscious": 3, "perception": 2,
-        "attention": 2, "focus": 2, "procrastination": 3,
-        "dopamine": 3, "serotonin": 3, "cortisol": 3, "hormone": 2,
-        "addiction": 3, "reward": 2, "motivation": 2, "willpower": 3,
-        "social anxiety": 3, "panic": 3, "loneliness": 3, "trust": 2,
-        "personality": 2, "introvert": 2, "extrovert": 2,
-        "narcissist": 3, "gaslighting": 3, "toxic": 2,
-        "relationship": 2, "attachment": 2, "childhood": 2,
-        "self-esteem": 2, "confidence": 2, "mindset": 2,
-        "happiness": 2, "gratitude": 2, "self-improvement": 2,
+    "BRAIN_SCIENCE": {
+        "brain": 4, "neuroscience": 4, "memory": 3, "sleep": 3,
+        "dream": 2, "neuron": 3, "cortex": 3, "dopamine": 3,
+        "serotonin": 3, "hormone": 2, "adrenaline": 2, "cortisol": 3,
+        "nervous system": 3, "subconscious": 3, "perception": 2,
+        "synapse": 3, "cognitive": 2, "mental fatigue": 3, "focus": 2,
+        "attention span": 2, "psychology": 1, "neurological": 4,
+        "amygdala": 3, "prefrontal": 3, "brain cells": 3,
     },
 
-    "FINANCE": {
-        "money": 3, "finance": 3, "financial": 3, "wealth": 3,
-        "invest": 3, "investment": 3, "stock": 3, "market": 2,
-        "budget": 3, "saving": 3, "debt": 3, "loan": 3,
-        "credit": 3, "bank": 3, "interest rate": 3, "compound": 3,
-        "rich": 2, "poor": 2, "income": 3, "salary": 3,
-        "tax": 3, "inflation": 3, "economy": 2, "recession": 3,
-        "real estate": 3, "property": 2, "rent": 2, "mortgage": 3,
-        "retirement": 3, "pension": 3, "401k": 3, "roth ira": 3,
-        "dividend": 3, "passive income": 3, "side hustle": 2,
-        "entrepreneur": 2, "business": 2, "profit": 2, "revenue": 2,
-        "cash flow": 3, "net worth": 3, "asset": 3, "liability": 3,
-        "portfolio": 3, "diversify": 3, "hedge fund": 3, "etf": 3,
-        "mutual fund": 3, "insurance": 2, "risk": 2, "return": 2,
-        "dollar": 2, "currency": 2, "exchange rate": 2, "gold": 2,
-        "bitcoin": 2, "wage": 2, "minimum wage": 2, "negotiate": 2,
+    "BIOLOGY_NATURE": {
+        "animal": 3, "biology": 3, "organism": 4, "nature": 2,
+        "evolution": 3, "species": 3, "wildlife": 3, "predator": 2,
+        "prey": 2, "ocean": 2, "deep sea": 3, "creature": 3,
+        "insect": 3, "bug": 2, "parasite": 4, "fungus": 3,
+        "bacteria": 2, "virus": 2, "dna": 2, "genetic": 2,
+        "anatomy": 3, "human body": 3, "bone": 2, "organ": 3,
+        "heart": 2, "stomach": 2, "blood": 2, "muscle": 2,
+        "survival": 3, "adaptation": 3, "ecosystem": 2,
+        "bizarre": 2, "weird": 2, "elephant": 3, "frog": 3, "owl": 3,
     },
 
     "SCIENCE": {
         "science": 3, "scientific": 3, "physics": 3, "chemistry": 3,
-        "biology": 3, "universe": 3, "space": 3, "planet": 3,
-        "galaxy": 3, "black hole": 3, "quantum": 2, "atom": 3,
-        "evolution": 3, "dna": 3, "gene": 3, "cell": 2,
-        "virus": 3, "bacteria": 3, "immune": 3, "vaccine": 2,
-        "climate": 2, "earth": 2, "ocean": 2, "nature": 2,
-        "animal": 2, "species": 2, "extinct": 3, "fossil": 2,
-        "dinosaur": 3, "human body": 3, "organ": 2, "heart": 2,
-        "experiment": 2, "discovery": 2, "research": 2, "study": 2,
-        "lightning": 2, "storm": 2, "earthquake": 2, "volcano": 2,
-        "sun": 2, "moon": 2, "gravity": 3, "light": 2, "speed": 2,
+        "universe": 3, "space": 3, "planet": 3, "galaxy": 3,
+        "black hole": 3, "quantum": 2, "atom": 3, "moon": 2,
+        "sun": 2, "gravity": 3, "light": 2, "speed": 2,
         "energy": 2, "matter": 2, "element": 2, "temperature": 2,
         "magnetic": 2, "electric": 2, "nuclear": 3, "radiation": 2,
         "time": 2, "dimension": 2, "parallel universe": 3,
-        "consciousness": 3, "simulation": 3, "mystery": 2,
+        "simulation": 3, "mystery": 2, "astronomy": 3, "cosmic": 3,
     },
     
     "VIRAL_FACTS_1": {},
@@ -124,7 +95,7 @@ def classify_topic(topic: str) -> str:
         topic: The topic string to classify
 
     Returns:
-        One of: "AI_TECH", "PSYCHOLOGY", "FINANCE", "SCIENCE", "VIRAL_FACTS_1", "VIRAL_FACTS_2"
+        One of: "TECH_SECRETS", "BRAIN_SCIENCE", "BIOLOGY_NATURE", "SCIENCE", "VIRAL_FACTS_1", "VIRAL_FACTS_2"
     """
     topic_lower = topic.lower()
     # Normalise punctuation
@@ -153,10 +124,10 @@ def get_cluster_display_name(cluster: str) -> str:
         return "Bizarre & Viral Facts"
         
     return {
-        "AI_TECH":    "AI & Technology",
-        "PSYCHOLOGY": "Psychology & Brain",
-        "FINANCE":    "Finance & Money",
-        "SCIENCE":    "Science & Mysteries",
+        "TECH_SECRETS":   "Tech Secrets & Hardware",
+        "BRAIN_SCIENCE":  "Brain & Neuroscience",
+        "BIOLOGY_NATURE": "Biology & Weird Nature",
+        "SCIENCE":        "Science & Mysteries",
     }.get(cluster, cluster)
 
 
@@ -166,8 +137,8 @@ def get_cluster_cta(cluster: str) -> str:
         return "Follow for daily bizarre facts that actually exist."
         
     return {
-        "AI_TECH":    "Follow for daily AI facts that nobody else covers.",
-        "PSYCHOLOGY": "Follow for daily psychology facts that will change how you think.",
-        "FINANCE":    "Follow for daily money facts that schools never taught you.",
-        "SCIENCE":    "Follow for daily science facts that will blow your mind.",
+        "TECH_SECRETS":   "Follow for daily tech secrets they don't want you to know.",
+        "BRAIN_SCIENCE":  "Follow for daily brain facts that will blow your mind.",
+        "BIOLOGY_NATURE": "Follow for daily bizarre biology facts you won't believe.",
+        "SCIENCE":        "Follow for daily science facts that actually exist.",
     }.get(cluster, "Follow for more facts every single day.")

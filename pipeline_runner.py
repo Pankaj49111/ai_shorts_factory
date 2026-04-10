@@ -1,12 +1,10 @@
 """
-pipeline_runner.py — AI Shorts Factory (v5.1 — Barbell Strategy)
-=================================================================
-What changed from v5:
-  ✓ Added 2 "Wildcard" niche slots to the rotation (4:2 ratio).
-  ✓ Wildcard slots use the old v4 logic (Reddit scraping + Gemini filter)
-    to generate broad, viral-appeal topics for audience growth.
-  ✓ Strict niches (AI, Finance, etc.) use curated banks for monetization.
-  ✓ This creates a "Barbell Strategy": one end for growth, one for monetization.
+pipeline_runner.py — AI Shorts Factory (v7.0 — Harvester Architecture)
+======================================================================
+What changed from v6.0:
+  ✓ Integrated the Trend Harvester architecture.
+  ✓ The pipeline now triggers `trend_harvester.py` every 40 successful runs.
+  ✓ `trend_fetcher.py` is now a simple consumer of pre-vetted topics.
 
 Entry point: python pipeline_runner.py
 """
@@ -20,6 +18,7 @@ import random
 import shutil
 import sys
 import time
+import subprocess
 from datetime import datetime, timedelta, time as dt_time, date, timezone
 from pathlib import Path
 from typing import Optional, Tuple
@@ -59,15 +58,35 @@ MUSIC_DIR     = Path("assets/music")
 KEEP_RUNS     = 2
 
 TARGET_DURATION = (25, 48)
-MIN_SCRIPT_WORDS = 85
-MAX_SCRIPT_WORDS = 100
+MIN_SCRIPT_WORDS = 70
+MAX_SCRIPT_WORDS = 105
 
 DESIRED_BROLL_CLIP_DURATION = 4.0
 BROLL_RETRY_WAIT = 15
 BROLL_MAX_RETRY  = 3
 
 WHISPER_MODEL = "base"
-CAPTION_MODE  = "beast"
+
+CLUSTER_ROTATION_FILE = Path("assets/logs/cluster_rotation.txt")
+
+# =============================================================================
+# DYNAMIC TOGGLE LOGIC
+# =============================================================================
+# Automatically toggle CAPTION_MODE between "karaoke" and "beast" based on 
+# whether the current cluster rotation index is even or odd.
+# =============================================================================
+
+def _get_cluster_index() -> int:
+    if not CLUSTER_ROTATION_FILE.exists():
+        return 0
+    try:
+        return int(CLUSTER_ROTATION_FILE.read_text().strip())
+    except (ValueError, FileNotFoundError):
+        return 0
+
+_current_idx = _get_cluster_index()
+CAPTION_MODE = "beast" if _current_idx % 2 == 0 else "karaoke"
+# =============================================================================
 
 POPULAR_VOICES = [
     "en-US-JennyNeural", "en-US-GuyNeural", "en-US-ChristopherNeural",
@@ -79,20 +98,20 @@ UPLOAD_TO_YOUTUBE   = True
 YOUTUBE_PRIVACY     = "private"
 NOTIFY_SUBSCRIBERS  = False
 
-# ── Niche clusters (4:2 Barbell Strategy) ───────────────────────────────────
+# ── Niche clusters (Optimized for Viral Performance based on Analytics) ───
 TOPIC_CLUSTERS = [
-    "AI_TECH", 
-    "PSYCHOLOGY", 
+    "BIOLOGY_NATURE", 
+    "TECH_SECRETS", 
     "VIRAL_FACTS_1", 
-    "FINANCE", 
+    "BRAIN_SCIENCE",
     "SCIENCE", 
     "VIRAL_FACTS_2"
 ]
-CLUSTER_ROTATION_FILE = Path("assets/logs/cluster_rotation.txt")
 
 SEEN_TOPICS_FILE  = Path("assets/logs/seen_topics.txt")
-MAX_SEEN_TOPICS   = 500
-CLUSTER_SCORES_FILE = Path("assets/logs/cluster_scores.json")
+MAX_SEEN_TOPICS   = 1000 # Increased capacity
+RUN_COUNTER_FILE = Path("assets/logs/successful_runs.txt")
+HARVESTER_CONFIG_FILE = Path("assets/config/trend_sources.json")
 
 IST = pytz.timezone("Asia/Kolkata")
 LAST_SCHEDULED_FILE  = Path("assets/logs/last_scheduled_time.txt")
@@ -115,17 +134,85 @@ logging.basicConfig(
 log = logging.getLogger("pipeline")
 
 # =============================================================================
-# Cluster rotation & Helpers
+# Harvester & Helpers
 # =============================================================================
 
-def _get_next_cluster() -> str:
-    idx = 0
-    if CLUSTER_ROTATION_FILE.exists():
-        try:
-            idx = int(CLUSTER_ROTATION_FILE.read_text().strip())
-        except ValueError:
-            idx = 0
+def _get_run_count() -> int:
+    if not RUN_COUNTER_FILE.exists():
+        return 0
+    try:
+        return int(RUN_COUNTER_FILE.read_text().strip())
+    except (ValueError, FileNotFoundError):
+        return 0
+
+def _increment_run_count():
+    count = _get_run_count() + 1
+    RUN_COUNTER_FILE.write_text(str(count))
+    log.info(f"Successful runs counter incremented to: {count}")
+
+def _trigger_harvester_if_needed():
+    run_count = _get_run_count()
     
+    try:
+        with open(HARVESTER_CONFIG_FILE, "r") as f:
+            config = json.load(f)
+        refresh_interval = config.get("refresh_interval_runs", 40)
+    except (FileNotFoundError, json.JSONDecodeError):
+        log.warning("Harvester config not found or invalid. Using default refresh interval of 40.")
+        refresh_interval = 40
+
+    if run_count > 0 and run_count % refresh_interval == 0:
+        log.info("=" * 60)
+        log.info(f"Run count {run_count} reached. Triggering Trend Harvester...")
+        log.info("The pipeline will pause while fresh topics are gathered.")
+        log.info("=" * 60)
+        
+        try:
+            # Ensure harvester script exists
+            harvester_script = "pipeline/trend_harvester.py"
+            if not Path(harvester_script).exists():
+                raise FileNotFoundError(f"{harvester_script} not found in the project.")
+
+            # Execute the harvester script as a subprocess
+            result = subprocess.run(
+                [sys.executable, harvester_script],
+                capture_output=True,
+                text=True,
+                check=True, # This will raise CalledProcessError if the script fails
+                encoding="utf-8"
+            )
+            
+            # Log harvester output for debugging
+            log.info("--- Trend Harvester Output ---")
+            for line in result.stdout.splitlines():
+                log.info(f"[Harvester] {line}")
+            if result.stderr:
+                log.warning("--- Trend Harvester Errors ---")
+                for line in result.stderr.splitlines():
+                    log.warning(f"[Harvester] {line}")
+            
+            log.info("=" * 60)
+            log.info("Trend Harvester finished. Resuming main pipeline.")
+            log.info("=" * 60)
+            
+        except FileNotFoundError as e:
+            log.error(f"Harvester trigger failed: {e}")
+        except subprocess.CalledProcessError as e:
+            log.error("="*60)
+            log.error("Trend Harvester script failed to execute!")
+            log.error(f"Return Code: {e.returncode}")
+            log.error("--- Harvester STDOUT ---")
+            log.error(e.stdout)
+            log.error("--- Harvester STDERR ---")
+            log.error(e.stderr)
+            log.error("="*60)
+            # We can decide to continue with the old topics or abort
+            log.warning("Continuing with potentially stale topics...")
+        except Exception as e:
+            log.error(f"An unexpected error occurred while running the harvester: {e}")
+
+def _get_next_cluster() -> str:
+    idx = _get_cluster_index()
     clusters = list(TOPIC_CLUSTERS)
     cluster = clusters[idx % len(clusters)]
     
@@ -136,7 +223,7 @@ def _get_next_cluster() -> str:
     return cluster
 
 def _ensure_dirs():
-    for d in [RUNS_ROOT, BROLL_CACHE_DIR, Path("assets/logs"), Path("credentials"), MUSIC_DIR]:
+    for d in [RUNS_ROOT, BROLL_CACHE_DIR, Path("assets/logs"), Path("credentials"), MUSIC_DIR, Path("assets/config")]:
         d.mkdir(parents=True, exist_ok=True)
 
 def _evict_old_runs():
@@ -185,11 +272,6 @@ def _append_upload_log(timestamp: str, topic: str, video_id: str, cluster: str):
     log.info(f"Upload logged: {path}")
 
 def _get_next_publish_time(commit: bool = True) -> str:
-    """
-    Get the next available publish slot.
-    If commit=True, it actually updates LAST_SCHEDULED_FILE (use only on successful upload).
-    If commit=False, it just previews the time (use for dry runs / before upload completes).
-    """
     current_utc_dt = datetime.now(timezone.utc)
     last_scheduled_utc: Optional[datetime] = None
     if LAST_SCHEDULED_FILE.exists():
@@ -244,9 +326,17 @@ def _get_next_publish_time(commit: bool = True) -> str:
 # Main pipeline
 # =============================================================================
 
-def run_pipeline(resume_run_timestamp: Optional[str] = None):
+def run_pipeline(resume_run_timestamp: Optional[str] = None, caption_override: Optional[str] = None):
     _ensure_dirs()
     
+    global CAPTION_MODE
+    if caption_override:
+        CAPTION_MODE = caption_override
+    log.info(f"Using Caption Mode: {CAPTION_MODE.upper()}")
+
+    if not resume_run_timestamp:
+        _trigger_harvester_if_needed()
+
     yt_ready = False
     if UPLOAD_TO_YOUTUBE:
         yt_ready = is_youtube_configured()
@@ -265,14 +355,12 @@ def run_pipeline(resume_run_timestamp: Optional[str] = None):
 
         meta_path = run_dir / "meta.json"
         
-        # If meta.json doesn't exist, we must reconstruct it from script.txt
         if not meta_path.exists():
             log.warning(f"meta.json not found in {run_dir}. Attempting to reconstruct from script.txt...")
             script_path = run_dir / "script.txt"
             if not script_path.exists():
                 raise FileNotFoundError(f"Cannot resume: Neither meta.json nor script.txt found in {run_dir}")
             
-            # Reconstruct basic info
             lines = script_path.read_text(encoding="utf-8").splitlines()
             topic = "unknown_topic"
             cluster = "SCIENCE"
@@ -294,7 +382,6 @@ def run_pipeline(resume_run_timestamp: Optional[str] = None):
             if not output_path.exists():
                 raise FileNotFoundError(f"Cannot resume SEO/Upload: output.mp4 not found in {run_dir}")
 
-            # Create a basic meta dict to continue
             meta: dict = {
                 "timestamp": timestamp,
                 "run_dir": str(run_dir),
@@ -314,7 +401,6 @@ def run_pipeline(resume_run_timestamp: Optional[str] = None):
             cleaned = meta.get("cleaned_script", "")
             output_path = Path(meta.get("output_path", run_dir / "output.mp4"))
             
-            # Handle case where youtube_metadata was saved partially or we need to recalculate
             youtube_category = CLUSTER_CATEGORY_MAP.get(cluster, "27")
             if "youtube_metadata" in meta:
                 youtube_category = meta["youtube_metadata"].get("category_id", youtube_category)
@@ -346,18 +432,7 @@ def run_pipeline(resume_run_timestamp: Optional[str] = None):
 
         log.info("STEP 1 — Fetching trending topic")
         seen = _load_seen_topics()
-        topic = None
-        for attempt in range(6):
-            try:
-                candidate = get_trending_topic(seen, cluster=cluster)
-                if candidate.strip().lower() not in seen:
-                    topic = candidate
-                    break
-                log.warning(f"Already used: {candidate!r} — retrying ({attempt+1}/6)")
-            except Exception as exc:
-                log.error(f"trend_fetcher error: {exc}")
-                time.sleep(4)
-        if not topic: raise RuntimeError("Could not find a fresh topic after 6 attempts.")
+        topic = get_trending_topic(seen, cluster=cluster)
         log.info(f"Topic: {topic!r}")
         meta["topic"] = topic
         _save_seen_topic(topic)
@@ -483,11 +558,9 @@ def run_pipeline(resume_run_timestamp: Optional[str] = None):
         log.info("STEP 7 — Uploading to YouTube")
         for attempt in range(3):
             try:
-                # We do NOT commit the time yet. We just get the proposed time.
                 publish_at_iso = _get_next_publish_time(commit=False)
                 video_id = upload_short(video_path=str(output_path), title=yt_meta["title"], description=yt_meta["description"], tags=yt_meta["tags"], category_id=youtube_category, privacy="private", notify_subscribers=NOTIFY_SUBSCRIBERS, publish_at=publish_at_iso)
                 
-                # If we get here, upload succeeded! Now we commit the time so the next video gets the next slot.
                 _get_next_publish_time(commit=True)
 
                 log.info(f"Uploaded: https://www.youtube.com/shorts/{video_id}")
@@ -497,7 +570,7 @@ def run_pipeline(resume_run_timestamp: Optional[str] = None):
                 log.warning(f"⚠️ {q_err}")
                 log.warning("The video was created successfully but could not be uploaded today.")
                 log.warning(f"Use `python retry_upload.py {run_dir}` tomorrow.")
-                break # Don't retry if quota is exceeded
+                break 
             except Exception as exc:
                 log.error(f"Upload error ({attempt+1}): {exc}")
                 if attempt < 2: time.sleep(20)
@@ -509,7 +582,11 @@ def run_pipeline(resume_run_timestamp: Optional[str] = None):
 
     meta["youtube_video_id"] = video_id
     meta["youtube_url"] = f"https://www.youtube.com/shorts/{video_id}" if video_id else None
-    _write_meta(run_dir, meta) # Write again to save the video_id
+    _write_meta(run_dir, meta) 
+    
+    if not resume_run_timestamp:
+        _increment_run_count()
+
     _evict_old_runs()
 
     log.info("=" * 60)
@@ -527,10 +604,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="AI Shorts Factory Pipeline Runner")
     parser.add_argument("--resume-run", type=str,
                         help="Timestamp of a previous run to resume (e.g., 20231027_123456)")
+    # Optional arguments to configure pipeline execution flags
+    parser.add_argument("--caption-mode", type=str, choices=["karaoke", "beast"],
+                        help="Override the configured caption mode")
     args = parser.parse_args()
 
     try:
-        run_pipeline(resume_run_timestamp=args.resume_run)
+        run_pipeline(resume_run_timestamp=args.resume_run, caption_override=args.caption_mode)
     except Exception as exc:
         log.critical(f"Pipeline aborted: {exc}", exc_info=True)
         sys.exit(1)

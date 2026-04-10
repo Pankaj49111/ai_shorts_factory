@@ -25,18 +25,32 @@ from pipeline.keyword_extractor import extract_youtube_tags
 # ─────────────────────────────────────────────────────────────────────────────
 
 _TITLE_FORMULAS = [
-    # Formula 1 — The "real reason" curiosity gap
-    lambda kw, hook: f"The Real Reason {kw.title()} (Most People Never Know)",
-    # Formula 2 — What-happens frame, search-friendly
-    lambda kw, hook: f"What Happens When {kw.title()}",
-    # Formula 3 — Mistake pattern, highest CTR
+    # Rank 1: 624 avg views
+    lambda kw, hook: f"The Truth About {kw.title()}",
+    # Rank 2: 585 avg views
+    lambda kw, hook: f"Why {kw.title()} Will Shock You",
+    # Rank 3: 569 avg views
+    lambda kw, hook: f"{kw.title()} — Most People Don't Know This",
+    # Rank 4: 465 avg views
     lambda kw, hook: f"The Mistake Everyone Makes With {kw.title()}",
-    # Formula 4 — Science/fact authority frame
-    lambda kw, hook: f"What Science Says About {kw.title()}",
-    # Formula 5 — Direct question, search intent
-    lambda kw, hook: f"Why {kw.title()} Affects You More Than You Think",
-    # Formula 6 — Nobody pattern
-    lambda kw, hook: f"Nobody Talks About What {kw.title()} Does To You",
+    # Rank 5: backup
+    lambda kw, hook: f"Did You Know About {kw.title()}?",
+]
+
+# ── BANNED patterns — never use these ─────────────────────────────────────────
+_BANNED_PATTERNS = [
+    r"Nobody Talks About What .+ Does To You",
+    r"What Happens When .+ Does To",
+    r"What Science Says About .+ And$",
+    r"Why .+ Affects You More Than And$",
+    r" Does To You$",
+    r"\.\.\.$",   # truncated titles
+]
+
+# ── Content safety — titles containing these get regenerated ─────────────────
+_UNSAFE_TITLE_WORDS = [
+    "penis", "nipple", "nude", "naked", "propellant", "explosive",
+    "kill", "murder", "suicide", "rape", "sex ", "porn",
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -130,16 +144,35 @@ def _extract_keyword(topic: str) -> str:
         "nobody talks about", "scientists discovered", "what happens when",
         "what happens to your", "most people never know", "stop doing",
         "you have been doing", "what they never teach you about",
-        "the mistake everyone makes with",
+        "the mistake everyone makes with", "did you know", "scientists just discovered",
+        "nobody ever explains why", "you have been wrong about",
+        "science finally has an answer",
     ]
     kw = topic.lower().strip()
     for sp in stop_phrases:
         kw = kw.replace(sp, "").strip()
 
+    # Remove trailing punctuation fragments
+    kw = re.sub(r"[?.!,]+$", "", kw).strip()
+
     # Take first 4 meaningful words
     words = [w for w in kw.split() if len(w) > 2][:4]
-    return " ".join(words).strip(" ,.")
+    result = " ".join(words).strip(" ,.")
+    return result if result else topic[:30]
 
+def _is_title_safe(title: str) -> bool:
+    tl = title.lower()
+    for word in _UNSAFE_TITLE_WORDS:
+        if word in tl:
+            return False
+    return True
+
+def _is_title_broken(title: str) -> bool:
+    """Returns True if the title matches a known broken pattern."""
+    for pattern in _BANNED_PATTERNS:
+        if re.search(pattern, title, re.IGNORECASE):
+            return True
+    return False
 
 def _pick_title_formula(topic: str, script: str) -> str:
     """
@@ -153,14 +186,23 @@ def _pick_title_formula(topic: str, script: str) -> str:
         kw = topic[:30]
 
     # Deterministic formula selection via topic hash
-    idx = int(hashlib.md5(topic.encode()).hexdigest(), 16) % len(_TITLE_FORMULAS)
-    raw_title = _TITLE_FORMULAS[idx](kw, hook)
+    topic_hash = int(hashlib.md5(topic.encode()).hexdigest(), 16)
+    formula_idx = topic_hash % len(_TITLE_FORMULAS)
 
-    # Enforce 60 character limit (YouTube shows full title up to ~60 chars)
-    if len(raw_title) > 60:
-        raw_title = raw_title[:57].rstrip() + "..."
+    # Try formulas in order starting from the hash-selected one
+    for offset in range(len(_TITLE_FORMULAS)):
+        idx   = (formula_idx + offset) % len(_TITLE_FORMULAS)
+        raw_title = _TITLE_FORMULAS[idx](kw, hook)
 
-    return raw_title
+        # Enforce 60 character limit (YouTube shows full title up to ~60 chars)
+        if len(raw_title) > 60:
+            raw_title = raw_title[:57].rstrip() + "..."
+
+        if not _is_title_broken(raw_title) and _is_title_safe(raw_title):
+            return raw_title
+
+    # Last resort — simple safe fallback
+    return f"You Won't Believe This About {kw.title()}"[:60]
 
 
 def build_metadata_from_script(

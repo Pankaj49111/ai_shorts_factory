@@ -43,8 +43,8 @@ from pipeline.caption_generator import build_caption_clips
 
 # ── constants ─────────────────────────────────────────────────────────────────
 TARGET_W, TARGET_H = 1080, 1920
-BROLL_SPEED        = 1.15
-REVERSE_PROB       = 0.30
+BROLL_SPEED        = 1.25
+REVERSE_PROB       = 0.35
 BG_MUSIC_VOLUME    = 0.08
 DARK_BG_COLOR      = (15, 15, 15)   # near-black fill for letterbox/pillarbox
 

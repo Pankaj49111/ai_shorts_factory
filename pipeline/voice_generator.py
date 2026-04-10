@@ -4,7 +4,7 @@ import os
 import sys
 import time
 
-def generate_voice(text, output, voice="en-US-JennyNeural", rate="+15%", pitch="+10Hz"): # Changed default rate to +15%
+def generate_voice(text, output, voice="en-US-JennyNeural", rate="+18%", pitch="+12Hz"): # Tweaked for higher energy
     """
     Generate voice using Edge TTS.
 
