@@ -4,7 +4,8 @@ trend_fetcher.py — Cluster-aware Trending Topic Fetcher v3 (with Wildcards)
 Strategy:
   - If cluster is a strict niche (AI, PSYCH, etc.):
     1. Try pytrends (Google Trends) filtered by cluster keywords.
-    2. Fall back to a curated 50-topic bank for that cluster.
+    2. Fall back to a curated topic bank for that cluster.
+    3. Dynamically extend the topic bank using Gemini when it runs low.
   - If cluster is a WILDCARD (VIRAL_FACTS_1 or VIRAL_FACTS_2):
     1. Scrape top posts from viral, fact-based subreddits (the old v4 logic).
     2. Filter results with Gemini for maximum viral potential.
@@ -22,11 +23,13 @@ import random
 import re
 import time
 import os
+import json
 import requests
 from typing import Optional, Set, List
 
 from dotenv import load_dotenv
 from google import genai
+from google.genai import types
 
 load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -263,6 +266,77 @@ _TOPIC_BANKS: dict[str, list[str]] = {
     ],
 }
 
+TOPIC_BANK_FILE = os.path.join("assets", "topic_banks.json")
+
+def _load_topic_banks() -> dict[str, list[str]]:
+    if os.path.exists(TOPIC_BANK_FILE):
+        try:
+            with open(TOPIC_BANK_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            log.warning(f"Failed to load topic banks from {TOPIC_BANK_FILE}: {e}")
+            
+    # Fallback to defaults if file doesn't exist or is corrupted
+    banks = {k: list(v) for k, v in _TOPIC_BANKS.items()}
+    _save_topic_banks(banks)
+    return banks
+
+def _save_topic_banks(banks: dict[str, list[str]]):
+    try:
+        os.makedirs(os.path.dirname(TOPIC_BANK_FILE), exist_ok=True)
+        with open(TOPIC_BANK_FILE, "w", encoding="utf-8") as f:
+            json.dump(banks, f, indent=4)
+    except Exception as e:
+        log.warning(f"Failed to save topic banks to {TOPIC_BANK_FILE}: {e}")
+
+def _extend_topic_bank_with_gemini(cluster: str, seen: set[str], current_bank: list[str]) -> list[str]:
+    if not GEMINI_API_KEY:
+        log.warning("No Gemini key — cannot extend topic bank")
+        return []
+
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    
+    # We provide some context to Gemini
+    exclude_list = list(seen) + current_bank
+    random.shuffle(exclude_list)
+    # Just sample a few to not blow up context window
+    exclude_sample = "\n".join(f"- {t}" for t in exclude_list[:150])
+
+    prompt = f"""
+You are a creative content idea generator for YouTube Shorts in the '{cluster}' niche.
+Generate 50 unique, viral, and engaging video titles (5-12 words each) that are fact-based.
+The channel posts bizarre, shocking, and universally interesting facts.
+Crucially, avoid any topics similar to these already used topics:
+{exclude_sample}
+
+Output ONLY a numbered list of topics, one per line, with no additional text or formatting.
+Example format:
+1. why your brain makes its worst decisions after 9pm
+2. the hidden algorithm that decides what you buy next
+"""
+    try:
+        log.info(f"Generating new topics for {cluster} via Gemini...")
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.85,
+            )
+        )
+        new_topics = []
+        for line in response.text.split("\n"):
+            # Remove numbering and quotes
+            line = re.sub(r"^\d+\.\s*", "", line.strip())
+            line = line.strip().strip('"').strip("'")
+            if line and len(line) > 10:
+                new_topics.append(line)
+                
+        log.info(f"Generated {len(new_topics)} new topics for {cluster}.")
+        return new_topics
+    except Exception as e:
+        log.warning(f"Gemini topic generation failed: {e}")
+        return []
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Logic for WILDCARD clusters (Reddit scraping - the old v4 method)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -417,7 +491,34 @@ def _get_strict_niche_topic(seen: set[str], cluster: str) -> str:
         return live
 
     log.info(f"[trend_fetcher] Using curated bank for cluster {cluster}")
-    bank = list(_TOPIC_BANKS.get(cluster, _TOPIC_BANKS["SCIENCE"]))
+    
+    all_banks = _load_topic_banks()
+    bank = all_banks.get(cluster, list(_TOPIC_BANKS.get("SCIENCE", [])))
+    
+    # Prune seen topics from the bank
+    original_len = len(bank)
+    bank = [t for t in bank if t.lower().strip() not in seen_lower]
+    
+    if len(bank) < original_len:
+        log.info(f"[trend_fetcher] Pruned {original_len - len(bank)} seen topics from {cluster} bank.")
+        all_banks[cluster] = bank
+        _save_topic_banks(all_banks)
+
+    # Extension trigger
+    if len(bank) < 15:
+        log.info(f"[trend_fetcher] Bank for {cluster} is low ({len(bank)} left). Extending with Gemini...")
+        new_topics = _extend_topic_bank_with_gemini(cluster, seen, bank)
+        if new_topics:
+            bank.extend(new_topics)
+            # Prune again just in case Gemini repeated a seen topic
+            bank = [t for t in bank if t.lower().strip() not in seen_lower]
+            all_banks[cluster] = bank
+            _save_topic_banks(all_banks)
+
+    if not bank:
+        raise RuntimeError(f"All topics for cluster {cluster!r} have been used and Gemini failed to generate more.")
+
+    # Prioritize and pick topic
     random.shuffle(bank)
     bank.sort(key=lambda t: -_viral_score(t))
 
@@ -426,6 +527,7 @@ def _get_strict_niche_topic(seen: set[str], cluster: str) -> str:
             log.info(f"[trend_fetcher] Curated topic picked: {topic!r}")
             return topic
 
+    # Fallback
     random.shuffle(bank)
     for topic in bank:
         if topic.lower().strip() not in seen_lower:

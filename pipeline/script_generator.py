@@ -9,7 +9,7 @@ Root cause of v2/v3 failures (now fixed):
 
 Fixes applied:
   1. Primary model: gemini-2.5-flash  (recommended for fast script generation)
-     Fallback model: gemini-1.5-pro      (paid, highest quality)
+     Fallback model: gemini-2.5-pro      (paid, highest quality)
   2. thinking_budget=0 injected wherever supported (kills thinking tokens)
   3. max_output_tokens raised to 3000 (generous headroom for both models)
   4. Prompt is self-contained in a single string (no system_instruction quirks)
@@ -30,8 +30,8 @@ log = logging.getLogger("pipeline.script_generator")
 
 # ── Models to try in order ────────────────────────────────────────────────────
 # gemini-2.5-flash: recommended for fast script generation
-# gemini-1.5-pro:   highest quality fallback
-_MODELS = ["gemini-2.5-flash", "gemini-1.5-pro"]
+# gemini-2.5-pro:   highest quality fallback
+_MODELS = ["gemini-2.5-flash", "gemini-2.5-pro"]
 
 # ── Cluster context + CTA ─────────────────────────────────────────────────────
 _CLUSTER_CONTEXT: dict[str, str] = {

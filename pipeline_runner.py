@@ -13,6 +13,7 @@ Entry point: python pipeline_runner.py
 
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import random
@@ -243,154 +244,232 @@ def _get_next_publish_time(commit: bool = True) -> str:
 # Main pipeline
 # =============================================================================
 
-def run_pipeline():
+def run_pipeline(resume_run_timestamp: Optional[str] = None):
     _ensure_dirs()
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = RUNS_ROOT / timestamp
-    run_dir.mkdir(parents=True, exist_ok=True)
-    broll_dir = run_dir / "broll"
-    broll_dir.mkdir(exist_ok=True)
-
-    log.info("=" * 60)
-    log.info(f"Pipeline run : {timestamp}")
-    log.info(f"Run dir      : {run_dir}")
-    log.info("=" * 60)
-
-    meta: dict = {"timestamp": timestamp, "run_dir": str(run_dir)}
-
+    
     yt_ready = False
     if UPLOAD_TO_YOUTUBE:
         yt_ready = is_youtube_configured()
         if not yt_ready: log.warning("YouTube upload DISABLED — credentials not found.")
 
-    cluster = _get_next_cluster()
-    meta["cluster"] = cluster
-    meta["cluster_display_name"] = get_cluster_display_name(cluster)
-    youtube_category = CLUSTER_CATEGORY_MAP.get(cluster, "27")
-    log.info(f"Cluster: {cluster} ({get_cluster_display_name(cluster)}) → YouTube category {youtube_category}")
+    if resume_run_timestamp:
+        run_dir = RUNS_ROOT / resume_run_timestamp
+        if not run_dir.is_dir():
+            raise FileNotFoundError(f"Resume run directory not found: {run_dir}")
+        
+        timestamp = resume_run_timestamp
+        log.info("=" * 60)
+        log.info(f"Resuming pipeline run: {timestamp}")
+        log.info(f"Run dir              : {run_dir}")
+        log.info("=" * 60)
 
-    log.info("STEP 1 — Fetching trending topic")
-    seen = _load_seen_topics()
-    topic = None
-    for attempt in range(6):
-        try:
-            candidate = get_trending_topic(seen, cluster=cluster)
-            if candidate.strip().lower() not in seen:
-                topic = candidate
-                break
-            log.warning(f"Already used: {candidate!r} — retrying ({attempt+1}/6)")
-        except Exception as exc:
-            log.error(f"trend_fetcher error: {exc}")
-            time.sleep(4)
-    if not topic: raise RuntimeError("Could not find a fresh topic after 6 attempts.")
-    log.info(f"Topic: {topic!r}")
-    meta["topic"] = topic
-    _save_seen_topic(topic)
+        meta_path = run_dir / "meta.json"
+        
+        # If meta.json doesn't exist, we must reconstruct it from script.txt
+        if not meta_path.exists():
+            log.warning(f"meta.json not found in {run_dir}. Attempting to reconstruct from script.txt...")
+            script_path = run_dir / "script.txt"
+            if not script_path.exists():
+                raise FileNotFoundError(f"Cannot resume: Neither meta.json nor script.txt found in {run_dir}")
+            
+            # Reconstruct basic info
+            lines = script_path.read_text(encoding="utf-8").splitlines()
+            topic = "unknown_topic"
+            cluster = "SCIENCE"
+            script_lines = []
+            
+            for line in lines:
+                if line.startswith("TOPIC: "):
+                    topic = line[7:].strip()
+                elif line.startswith("CLUSTER: "):
+                    cluster = line[9:].strip()
+                elif not line.startswith("TOPIC:") and not line.startswith("CLUSTER:"):
+                    script_lines.append(line)
+            
+            raw_script = "\n".join(script_lines).strip()
+            cleaned = clean_script(raw_script)
+            output_path = run_dir / "output.mp4"
+            youtube_category = CLUSTER_CATEGORY_MAP.get(cluster, "27")
+            
+            if not output_path.exists():
+                raise FileNotFoundError(f"Cannot resume SEO/Upload: output.mp4 not found in {run_dir}")
 
-    log.info(f"STEP 2 — Generating script (target: {MIN_SCRIPT_WORDS}–{MAX_SCRIPT_WORDS} words)")
-    script = None
-    for attempt in range(4):
-        try:
-            candidate = generate_script(topic, cluster=cluster)
-            word_count = len(candidate.split())
-            if MIN_SCRIPT_WORDS <= word_count <= MAX_SCRIPT_WORDS + 5:
-                script = candidate
-                log.info(f"Script accepted: {word_count} words")
-                break
-            log.warning(f"Script word count {word_count} outside target — retrying ({attempt+1}/4)")
-        except Exception as exc:
-            log.error(f"script_generator error ({attempt+1}): {exc}")
-            time.sleep(6)
-    if not script: raise RuntimeError("Script generation failed after 4 attempts.")
-    (run_dir / "script.txt").write_text(f"TOPIC: {topic}\nCLUSTER: {cluster}\n\n{script}", encoding="utf-8")
-    meta["script"] = script
-
-    log.info("STEP 3 — Generating voice")
-    cleaned = clean_script(script)
-    meta["cleaned_script"] = cleaned
-    selected_voice = random.choice(POPULAR_VOICES)
-    log.info(f"Selected voice for this run: {selected_voice}")
-    meta["voice"] = selected_voice
-    audio_path = run_dir / "narration.mp3"
-    for attempt in range(3):
-        try:
-            generate_voice(cleaned, str(audio_path), selected_voice)
-            if audio_path.stat().st_size < 5_000: raise ValueError("Audio suspiciously small")
-            log.info(f"Audio: {audio_path.stat().st_size:,} bytes")
-            break
-        except Exception as exc:
-            log.error(f"voice_generator error ({attempt+1}): {exc}")
-            time.sleep(5)
-    else:
-        raise RuntimeError("Voice generation failed after 3 attempts.")
-
-    with AudioFileClip(str(audio_path)) as narration_clip:
-        audio_dur = narration_clip.duration
-    min_d, max_d = TARGET_DURATION
-    final_video_duration = min(max(audio_dur + 0.4, min_d), max_d)
-    broll_queries_for_run = min_broll_clips_for_run = max(3, math.ceil(final_video_duration / DESIRED_BROLL_CLIP_DURATION))
-    log.info(f"Dynamic B-roll: Final video duration {final_video_duration:.2f}s -> {min_broll_clips_for_run} clips")
-
-    log.info("STEP 4a — Extracting Pexels keywords")
-    queries: list[str] = []
-    for attempt in range(3):
-        try:
-            queries = extract_pexels_queries(script, count=broll_queries_for_run)
-            if queries: break
-        except Exception as exc:
-            log.error(f"keyword_extractor error ({attempt+1}): {exc}")
-            time.sleep(5)
-    if not queries:
-        log.warning("Keyword extraction failed — falling back to topic words.")
-        queries = [w.strip(".,!?") for w in topic.split() if len(w) > 3][:broll_queries_for_run]
-    log.info(f"B-roll queries: {queries}")
-    meta["broll_queries"] = queries
-
-    log.info("STEP 4b — Downloading b-roll")
-    fresh_clips: list[str] = []
-    for attempt in range(BROLL_MAX_RETRY):
-        try:
-            result = download_broll(queries, clips_per_query=1, output_dir=str(broll_dir))
-            if len(result) >= 2:
-                fresh_clips = result
-                _cache_broll_clips(fresh_clips)
-                log.info(f"Downloaded {len(fresh_clips)} fresh clips.")
-                break
-            log.warning(f"Only {len(result)} clips returned ({attempt+1}/{BROLL_MAX_RETRY})")
-        except Exception as exc:
-            log.warning(f"Pexels error ({attempt+1}): {exc}")
-            if attempt < BROLL_MAX_RETRY - 1: time.sleep(BROLL_RETRY_WAIT)
-    
-    broll = list(fresh_clips)
-    if len(broll) < min_broll_clips_for_run:
-        needed = min_broll_clips_for_run - len(broll)
-        log.warning(f"Only {len(broll)}/{min_broll_clips_for_run} clips — pulling {needed} from cache.")
-        broll += _build_fallback_clips(needed)
-    log.info(f"Final clip list: {len(broll)} clips")
-    meta["broll_clips"] = broll
-
-    log.info("STEP 5 — Assembling video")
-    output_path = run_dir / "output.mp4"
-    music_arg = None
-    if MUSIC_DIR and MUSIC_DIR.is_dir():
-        music_files = [p for p in MUSIC_DIR.glob("*.mp3") if p.is_file()]
-        if music_files:
-            music_arg = str(random.choice(music_files))
-            log.info(f"Background music: {Path(music_arg).name}")
+            # Create a basic meta dict to continue
+            meta: dict = {
+                "timestamp": timestamp,
+                "run_dir": str(run_dir),
+                "topic": topic,
+                "cluster": cluster,
+                "cluster_display_name": get_cluster_display_name(cluster),
+                "script": raw_script,
+                "cleaned_script": cleaned,
+                "output_path": str(output_path)
+            }
         else:
-            log.warning(f"No .mp3 files in {MUSIC_DIR} — skipping background music.")
+            with open(meta_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            
+            topic = meta.get("topic", "unknown_topic")
+            cluster = meta.get("cluster", "SCIENCE")
+            cleaned = meta.get("cleaned_script", "")
+            output_path = Path(meta.get("output_path", run_dir / "output.mp4"))
+            
+            # Handle case where youtube_metadata was saved partially or we need to recalculate
+            youtube_category = CLUSTER_CATEGORY_MAP.get(cluster, "27")
+            if "youtube_metadata" in meta:
+                youtube_category = meta["youtube_metadata"].get("category_id", youtube_category)
 
-    for attempt in range(2):
-        try:
-            assemble(broll=broll, audio=str(audio_path), outfile=str(output_path), music_path=music_arg, captions=True, whisper_model=WHISPER_MODEL, caption_mode=CAPTION_MODE, target_duration=TARGET_DURATION, min_cuts=min_broll_clips_for_run)
-            if not output_path.exists() or output_path.stat().st_size < 50_000: raise ValueError("Output video too small.")
-            log.info(f"Video: {output_path.stat().st_size / 1_048_576:.1f} MB → {output_path}")
-            break
-        except Exception as exc:
-            log.error(f"video_assembler error ({attempt+1}): {exc}")
-            if attempt == 1: raise RuntimeError(f"Video assembly failed: {exc}") from exc
-            time.sleep(6)
-    meta["output_path"] = str(output_path)
+        log.info("Skipping topic fetching, script generation, voice generation, b-roll fetching, video assembly.")
+        log.info(f"Loaded Topic: {topic!r}")
+        log.info(f"Loaded Cluster: {cluster}")
+        log.info(f"Loaded Video Path: {output_path}")
+
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_dir = RUNS_ROOT / timestamp
+        run_dir.mkdir(parents=True, exist_ok=True)
+        broll_dir = run_dir / "broll"
+        broll_dir.mkdir(exist_ok=True)
+
+        log.info("=" * 60)
+        log.info(f"Pipeline run : {timestamp}")
+        log.info(f"Run dir      : {run_dir}")
+        log.info("=" * 60)
+
+        meta: dict = {"timestamp": timestamp, "run_dir": str(run_dir)}
+
+        cluster = _get_next_cluster()
+        meta["cluster"] = cluster
+        meta["cluster_display_name"] = get_cluster_display_name(cluster)
+        youtube_category = CLUSTER_CATEGORY_MAP.get(cluster, "27")
+        log.info(f"Cluster: {cluster} ({get_cluster_display_name(cluster)}) → YouTube category {youtube_category}")
+
+        log.info("STEP 1 — Fetching trending topic")
+        seen = _load_seen_topics()
+        topic = None
+        for attempt in range(6):
+            try:
+                candidate = get_trending_topic(seen, cluster=cluster)
+                if candidate.strip().lower() not in seen:
+                    topic = candidate
+                    break
+                log.warning(f"Already used: {candidate!r} — retrying ({attempt+1}/6)")
+            except Exception as exc:
+                log.error(f"trend_fetcher error: {exc}")
+                time.sleep(4)
+        if not topic: raise RuntimeError("Could not find a fresh topic after 6 attempts.")
+        log.info(f"Topic: {topic!r}")
+        meta["topic"] = topic
+        _save_seen_topic(topic)
+
+        log.info(f"STEP 2 — Generating script (target: {MIN_SCRIPT_WORDS}–{MAX_SCRIPT_WORDS} words)")
+        script = None
+        for attempt in range(4):
+            try:
+                candidate = generate_script(topic, cluster=cluster)
+                word_count = len(candidate.split())
+                if MIN_SCRIPT_WORDS <= word_count <= MAX_SCRIPT_WORDS + 5:
+                    script = candidate
+                    log.info(f"Script accepted: {word_count} words")
+                    break
+                log.warning(f"Script word count {word_count} outside target — retrying ({attempt+1}/4)")
+            except Exception as exc:
+                log.error(f"script_generator error ({attempt+1}): {exc}")
+                time.sleep(6)
+        if not script: raise RuntimeError("Script generation failed after 4 attempts.")
+        (run_dir / "script.txt").write_text(f"TOPIC: {topic}\nCLUSTER: {cluster}\n\n{script}", encoding="utf-8")
+        meta["script"] = script
+
+        log.info("STEP 3 — Generating voice")
+        cleaned = clean_script(script)
+        meta["cleaned_script"] = cleaned
+        selected_voice = random.choice(POPULAR_VOICES)
+        log.info(f"Selected voice for this run: {selected_voice}")
+        meta["voice"] = selected_voice
+        audio_path = run_dir / "narration.mp3"
+        for attempt in range(3):
+            try:
+                generate_voice(cleaned, str(audio_path), selected_voice)
+                if audio_path.stat().st_size < 5_000: raise ValueError("Audio suspiciously small")
+                log.info(f"Audio: {audio_path.stat().st_size:,} bytes")
+                break
+            except Exception as exc:
+                log.error(f"voice_generator error ({attempt+1}): {exc}")
+                time.sleep(5)
+        else:
+            raise RuntimeError("Voice generation failed after 3 attempts.")
+
+        with AudioFileClip(str(audio_path)) as narration_clip:
+            audio_dur = narration_clip.duration
+        min_d, max_d = TARGET_DURATION
+        final_video_duration = min(max(audio_dur + 0.4, min_d), max_d)
+        broll_queries_for_run = min_broll_clips_for_run = max(3, math.ceil(final_video_duration / DESIRED_BROLL_CLIP_DURATION))
+        log.info(f"Dynamic B-roll: Final video duration {final_video_duration:.2f}s -> {min_broll_clips_for_run} clips")
+
+        log.info("STEP 4a — Extracting Pexels keywords")
+        queries: list[str] = []
+        for attempt in range(3):
+            try:
+                queries = extract_pexels_queries(script, count=broll_queries_for_run)
+                if queries: break
+            except Exception as exc:
+                log.error(f"keyword_extractor error ({attempt+1}): {exc}")
+                time.sleep(5)
+        if not queries:
+            log.warning("Keyword extraction failed — falling back to topic words.")
+            queries = [w.strip(".,!?") for w in topic.split() if len(w) > 3][:broll_queries_for_run]
+        log.info(f"B-roll queries: {queries}")
+        meta["broll_queries"] = queries
+
+        log.info("STEP 4b — Downloading b-roll")
+        fresh_clips: list[str] = []
+        for attempt in range(BROLL_MAX_RETRY):
+            try:
+                result = download_broll(queries, clips_per_query=1, output_dir=str(broll_dir))
+                if len(result) >= 2:
+                    fresh_clips = result
+                    _cache_broll_clips(fresh_clips)
+                    log.info(f"Downloaded {len(fresh_clips)} fresh clips.")
+                    break
+                log.warning(f"Only {len(result)} clips returned ({attempt+1}/{BROLL_MAX_RETRY})")
+            except Exception as exc:
+                log.warning(f"Pexels error ({attempt+1}): {exc}")
+                if attempt < BROLL_MAX_RETRY - 1: time.sleep(BROLL_RETRY_WAIT)
+        
+        broll = list(fresh_clips)
+        if len(broll) < min_broll_clips_for_run:
+            needed = min_broll_clips_for_run - len(broll)
+            log.warning(f"Only {len(broll)}/{min_broll_clips_for_run} clips — pulling {needed} from cache.")
+            broll += _build_fallback_clips(needed)
+        log.info(f"Final clip list: {len(broll)} clips")
+        meta["broll_clips"] = broll
+
+        log.info("STEP 5 — Assembling video")
+        output_path = run_dir / "output.mp4"
+        music_arg = None
+        if MUSIC_DIR and MUSIC_DIR.is_dir():
+            music_files = [p for p in MUSIC_DIR.glob("*.mp3") if p.is_file()]
+            if music_files:
+                music_arg = str(random.choice(music_files))
+                log.info(f"Background music: {Path(music_arg).name}")
+            else:
+                log.warning(f"No .mp3 files in {MUSIC_DIR} — skipping background music.")
+
+        for attempt in range(2):
+            try:
+                assemble(broll=broll, audio=str(audio_path), outfile=str(output_path), music_path=music_arg, captions=True, whisper_model=WHISPER_MODEL, caption_mode=CAPTION_MODE, target_duration=TARGET_DURATION, min_cuts=min_broll_clips_for_run)
+                if not output_path.exists() or output_path.stat().st_size < 50_000: raise ValueError("Output video too small.")
+                log.info(f"Video: {output_path.stat().st_size / 1_048_576:.1f} MB → {output_path}")
+                break
+            except Exception as exc:
+                log.error(f"video_assembler error ({attempt+1}): {exc}")
+                if attempt == 1: raise RuntimeError(f"Video assembly failed: {exc}") from exc
+                time.sleep(6)
+        meta["output_path"] = str(output_path)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STEP 6 & 7 (Executes for both normal runs and resumed runs)
+    # ─────────────────────────────────────────────────────────────────────────
 
     log.info("STEP 6 — Building SEO metadata")
     yt_meta = build_metadata_from_script(topic=topic, script=cleaned, category_id=youtube_category, cluster=cluster)
@@ -430,6 +509,7 @@ def run_pipeline():
 
     meta["youtube_video_id"] = video_id
     meta["youtube_url"] = f"https://www.youtube.com/shorts/{video_id}" if video_id else None
+    _write_meta(run_dir, meta) # Write again to save the video_id
     _evict_old_runs()
 
     log.info("=" * 60)
@@ -444,8 +524,13 @@ def run_pipeline():
 
 # =============================================================================
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="AI Shorts Factory Pipeline Runner")
+    parser.add_argument("--resume-run", type=str,
+                        help="Timestamp of a previous run to resume (e.g., 20231027_123456)")
+    args = parser.parse_args()
+
     try:
-        run_pipeline()
+        run_pipeline(resume_run_timestamp=args.resume_run)
     except Exception as exc:
         log.critical(f"Pipeline aborted: {exc}", exc_info=True)
         sys.exit(1)
