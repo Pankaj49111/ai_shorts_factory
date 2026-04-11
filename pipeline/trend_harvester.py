@@ -8,11 +8,9 @@ from pathlib import Path
 from typing import List, Set, Dict
 
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
+from pipeline.llm_manager import generate_completion
 
 load_dotenv()
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # =============================================================================
 # Logging
@@ -111,17 +109,11 @@ def scrape_rss(feeds: List[str]) -> List[str]:
     return topics
 
 
-def filter_with_gemini(cluster: str, raw_data: List[str], seen_topics: Set[str], current_pool: List[str]) -> List[str]:
-    if not GEMINI_API_KEY:
-        log.error("GEMINI_API_KEY missing. Cannot filter topics.")
-        return []
-
+def filter_with_llm(cluster: str, raw_data: List[str], seen_topics: Set[str], current_pool: List[str]) -> List[str]:
     if not raw_data:
         log.warning(f"No raw data gathered for {cluster}.")
         return []
 
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    
     # Create exclusion list context
     exclude_list = list(seen_topics) + current_pool
     random.shuffle(exclude_list)
@@ -153,17 +145,11 @@ Example format:
 """
 
     try:
-        log.info(f"Asking Gemini to filter and format {len(raw_data)} raw items for {cluster}...")
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.7,
-            )
-        )
+        log.info(f"Asking LLM to filter and format {len(raw_data)} raw items for {cluster}...")
+        raw = generate_completion(prompt, task_type="utility", temperature=0.7, max_tokens=1500)
         
         new_topics = []
-        for line in response.text.split("\n"):
+        for line in raw.split("\n"):
             # Remove numbering, quotes, and markdown bullets
             line = re.sub(r"^(\d+\.\s*|\-\s*)", "", line.strip())
             line = line.strip().strip('"').strip("'")
@@ -172,10 +158,10 @@ Example format:
                 if line.lower() not in seen_topics and line.lower() not in [t.lower() for t in current_pool]:
                     new_topics.append(line)
                 
-        log.info(f"Gemini returned {len(new_topics)} fresh, deduplicated topics.")
+        log.info(f"LLM returned {len(new_topics)} fresh, deduplicated topics.")
         return new_topics
     except Exception as e:
-        log.error(f"Gemini filtering failed for {cluster}: {e}")
+        log.error(f"LLM filtering failed for {cluster}: {e}")
         return []
 
 
@@ -207,9 +193,9 @@ def harvest():
             
         log.info(f"Gathered {len(raw_data)} raw items.")
         
-        # 3. Filter and Format via Gemini
+        # 3. Filter and Format via LLM
         current_pool = curated.get(cluster, [])
-        fresh_topics = filter_with_gemini(cluster, raw_data, seen_topics, current_pool)
+        fresh_topics = filter_with_llm(cluster, raw_data, seen_topics, current_pool)
         
         if fresh_topics:
             # 4. Append to pool

@@ -1,23 +1,18 @@
 import os
 import re
 from dotenv import load_dotenv
-from google import genai
+from pipeline.llm_manager import generate_completion
 
 load_dotenv()
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
-
 def extract_pexels_queries(script, count=5):
-    if GEMINI_API_KEY:
-        return _extract_pexels_with_gemini(script, count)
-    else:
+    try:
+        return _extract_pexels_with_llm(script, count)
+    except Exception as e:
+        print(f"LLM extraction failed: {e}")
         return _extract_pexels_fallback(script, count)
 
-
-def _extract_pexels_with_gemini(script, count):
-    client = genai.Client(api_key=GEMINI_API_KEY)
-
+def _extract_pexels_with_llm(script, count):
     prompt = f"""
 You are helping find b-roll footage for a YouTube Shorts video.
 
@@ -34,11 +29,7 @@ Script:
 {script}
 """
 
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt
-    )
-    raw = response.text.strip()
+    raw = generate_completion(prompt, task_type="utility", temperature=0.5, max_tokens=100)
 
     queries = []
     for line in raw.splitlines():
@@ -49,7 +40,6 @@ Script:
     queries = queries[:count]
     print(f"  Pexels queries: {queries}")
     return queries
-
 
 def _extract_pexels_fallback(script, count):
     STOPWORDS = {
@@ -74,17 +64,14 @@ def _extract_pexels_fallback(script, count):
     print(f"  Pexels queries (fallback): {keywords}")
     return keywords
 
-
 def extract_youtube_tags(script, count=10):
-    if GEMINI_API_KEY:
-        return _extract_youtube_tags_with_gemini(script, count)
-    else:
+    try:
+        return _extract_youtube_tags_with_llm(script, count)
+    except Exception as e:
+        print(f"LLM tag extraction failed: {e}")
         return _extract_youtube_tags_fallback(script, count)
 
-
-def _extract_youtube_tags_with_gemini(script, count):
-    client = genai.Client(api_key=GEMINI_API_KEY)
-
+def _extract_youtube_tags_with_llm(script, count):
     prompt = f"""
 You are an expert YouTube SEO specialist.
 
@@ -101,11 +88,7 @@ Rules:
 Script:
 {script}
 """
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt
-    )
-    raw = response.text.strip()
+    raw = generate_completion(prompt, task_type="utility", temperature=0.5, max_tokens=150)
 
     tags = []
     for line in raw.splitlines():
@@ -116,7 +99,6 @@ Script:
     tags = tags[:count]
     print(f"  YouTube tags: {tags}")
     return tags
-
 
 def _extract_youtube_tags_fallback(script, count):
     STOPWORDS = {

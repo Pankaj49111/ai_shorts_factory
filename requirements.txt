@@ -10,6 +10,10 @@ faster-whisper>=1.0.0
 # Gemini (new SDK - do NOT install google-generativeai, it is deprecated)
 google-genai>=1.0.0
 
+# LLM Fallback Providers
+groq>=0.4.2
+cerebras_cloud_sdk>=1.0.0
+
 # Image processing
 Pillow>=10.0.0
 
