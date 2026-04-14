@@ -85,7 +85,10 @@ def _get_cluster_index() -> int:
         return 0
 
 _current_idx = _get_cluster_index()
-CAPTION_MODE = "beast" if _current_idx % 2 == 0 else "karaoke"
+# We want a 10:2 ratio for beast:karaoke. We can use modulo 12.
+# 0-9: beast (10 times)
+# 10-11: karaoke (2 times)
+CAPTION_MODE = "beast" if _current_idx % 12 < 10 else "karaoke"
 # =============================================================================
 
 POPULAR_VOICES = [

@@ -1,23 +1,28 @@
+import sys
+from pathlib import Path
+
+# Ensure the root project directory is in the sys.path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 import json
 import logging
 import os
 import random
 import re
 import requests
-from pathlib import Path
 from typing import List, Set, Dict
 
 from dotenv import load_dotenv
 from pipeline.llm_manager import generate_completion
+from googleapiclient.discovery import build
 
 load_dotenv()
 
 # =============================================================================
 # Logging
 # =============================================================================
-# Using absolute paths from project root to handle execution from both locations
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-
 Path(PROJECT_ROOT / "assets/logs").mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
@@ -35,6 +40,26 @@ log = logging.getLogger("harvester")
 SOURCES_FILE = PROJECT_ROOT / "assets/config/trend_sources.json"
 CURATED_FILE = PROJECT_ROOT / "assets/config/curated_trends.json"
 SEEN_FILE = PROJECT_ROOT / "assets/logs/seen_topics.txt"
+
+# YouTube API client initialization
+_yt_client = None
+
+def get_yt_client():
+    global _yt_client
+    if _yt_client is None:
+        try:
+            from google.oauth2.credentials import Credentials
+            token_path = PROJECT_ROOT / "credentials" / "token.json"
+            if not token_path.exists():
+                log.warning("YouTube token.json not found. YouTube scraping will be skipped.")
+                return None
+                
+            creds = Credentials.from_authorized_user_file(str(token_path), ["https://www.googleapis.com/auth/youtube.readonly"])
+            _yt_client = build("youtube", "v3", credentials=creds)
+        except Exception as e:
+            log.warning(f"Failed to initialize YouTube client: {e}")
+            return None
+    return _yt_client
 
 
 def load_seen_topics() -> Set[str]:
@@ -109,6 +134,77 @@ def scrape_rss(feeds: List[str]) -> List[str]:
     return topics
 
 
+def scrape_youtube(channels: List[str], max_videos_per_channel: int = 5) -> List[str]:
+    """
+    Scrapes the latest video titles from a list of YouTube channel handles.
+    Uses the authenticated OAuth token via the YouTube Data API v3.
+    Cost: ~101 quota units per channel (100 for search, 1 for playlistItems).
+    """
+    topics = []
+    yt = get_yt_client()
+    if not yt:
+        return topics
+        
+    random.shuffle(channels)
+    # Pick a subset to keep quota absolutely minimal and vary sources
+    selected_channels = channels[:3]
+
+    for handle in selected_channels:
+        try:
+            # 1. Resolve handle/username to Channel ID and get their Uploads playlist ID
+            # First, check if it's already an ID vs a handle/username
+            if handle.startswith("UC") and len(handle) == 24:
+                channel_response = yt.channels().list(
+                    part="contentDetails",
+                    id=handle
+                ).execute()
+            else:
+                # Handle @username format or plain username
+                search_q = handle if handle.startswith("@") else f"@{handle}"
+                search_response = yt.search().list(
+                    part="snippet",
+                    q=search_q,
+                    type="channel",
+                    maxResults=1
+                ).execute()
+                
+                if not search_response.get("items"):
+                    log.warning(f"Could not resolve YouTube channel: {handle}")
+                    continue
+                    
+                channel_id = search_response["items"][0]["snippet"]["channelId"]
+                
+                channel_response = yt.channels().list(
+                    part="contentDetails",
+                    id=channel_id
+                ).execute()
+
+            if not channel_response.get("items"):
+                continue
+
+            # The ID of the playlist that contains the channel's uploaded videos
+            uploads_playlist_id = channel_response["items"][0]["contentDetails"]["relatedPlaylists"]["uploads"]
+
+            # 2. Fetch the latest videos from that playlist
+            playlist_response = yt.playlistItems().list(
+                part="snippet",
+                playlistId=uploads_playlist_id,
+                maxResults=max_videos_per_channel
+            ).execute()
+
+            for item in playlist_response.get("items", []):
+                title = item["snippet"]["title"]
+                if len(title) > 15:
+                    # Clean out common YT title fluff
+                    clean_title = re.sub(r"(?i)(#shorts|#short|#viral)", "", title).strip()
+                    topics.append(clean_title)
+
+        except Exception as e:
+            log.warning(f"YouTube scrape error for {handle}: {e}")
+
+    return topics
+
+
 def filter_with_llm(cluster: str, raw_data: List[str], seen_topics: Set[str], current_pool: List[str]) -> List[str]:
     if not raw_data:
         log.warning(f"No raw data gathered for {cluster}.")
@@ -125,7 +221,7 @@ def filter_with_llm(cluster: str, raw_data: List[str], seen_topics: Set[str], cu
 You are a viral YouTube Shorts producer for the '{cluster}' niche. 
 Your job is to act as a data filter and title generator.
 
-I am providing you with raw, messy data scraped from Reddit and News feeds today:
+I am providing you with raw, messy data scraped from Reddit, RSS, and YouTube today:
 RAW DATA:
 {raw_text}
 
@@ -177,6 +273,11 @@ def harvest():
     for cluster, config in sources.items():
         log.info(f"--- Harvesting for cluster: {cluster} ---")
         
+        current_pool = curated.get(cluster, [])
+        if len(current_pool) > 45:
+            log.info(f"Skipping cluster {cluster} — pool already has {len(current_pool)} topics (>45).")
+            continue
+        
         raw_data = []
         
         # 1. Scrape Reddit
@@ -191,14 +292,21 @@ def harvest():
             log.info(f"Scraping RSS ({len(feeds)} feeds)...")
             raw_data.extend(scrape_rss(feeds))
             
+        # 3. Scrape YouTube
+        channels = config.get("youtube_channels", [])
+        if channels:
+            log.info(f"Scraping YouTube ({len(channels)} channels)...")
+            yt_data = scrape_youtube(channels)
+            if yt_data:
+                raw_data.extend(yt_data)
+            
         log.info(f"Gathered {len(raw_data)} raw items.")
         
-        # 3. Filter and Format via LLM
-        current_pool = curated.get(cluster, [])
+        # 4. Filter and Format via LLM
         fresh_topics = filter_with_llm(cluster, raw_data, seen_topics, current_pool)
         
         if fresh_topics:
-            # 4. Append to pool
+            # 5. Append to pool
             if cluster not in curated:
                 curated[cluster] = []
             curated[cluster].extend(fresh_topics)

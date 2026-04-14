@@ -29,8 +29,9 @@ def _get_groq_client():
         api_key = os.getenv("GROQ_API_KEY")
         if not api_key:
             raise ValueError("GROQ_API_KEY not found in .env")
-        from groq import Groq
-        _groq_client = Groq(api_key=api_key)
+        import groq
+        # Set max retries to 0 so we fail fast and move to fallback instead of waiting 30+ seconds
+        _groq_client = groq.Groq(api_key=api_key, max_retries=0)
     return _groq_client
 
 def _get_cerebras_client():
@@ -39,8 +40,19 @@ def _get_cerebras_client():
         api_key = os.getenv("CEREBRAS_API_KEY")
         if not api_key:
             raise ValueError("CEREBRAS_API_KEY not found in .env")
-        from cerebras.cloud.sdk import Cerebras
-        _cerebras_client = Cerebras(api_key=api_key)
+        # Ensure we don't fail if cerebras module structure changes, we only need the client
+        try:
+            from cerebras.cloud.sdk import Cerebras
+            _cerebras_client = Cerebras(api_key=api_key, max_retries=0)
+        except ImportError:
+            # Fallback if cerebras is just installed as `cerebras` or `openai` wrapper
+            import openai
+            _cerebras_client = openai.OpenAI(
+                base_url="https://api.cerebras.ai/v1",
+                api_key=api_key,
+                max_retries=0
+            )
+            return _cerebras_client
     return _cerebras_client
 
 
@@ -103,13 +115,26 @@ def _call_groq(prompt: str, model: str = "llama-3.3-70b-versatile", temperature:
 
 def _call_cerebras(prompt: str, model: str = "llama3.1-8b", temperature: float = 0.7, max_tokens: int = 3000) -> str:
     client = _get_cerebras_client()
-    response = client.chat.completions.create(
-        messages=[{"role": "user", "content": prompt}],
-        model=model,
-        temperature=temperature,
-        max_completion_tokens=max_tokens,
-        stream=False
-    )
+    # Cerebras API relies on max_completion_tokens, whereas OpenAI/Groq use max_tokens
+    # We detect if the client is the official cerebras SDK or the openai wrapper
+    
+    kwargs = {
+        "messages": [{"role": "user", "content": prompt}],
+        "model": model,
+        "temperature": temperature,
+        "stream": False
+    }
+    
+    # Check if we're using the openai wrapper or cerebras SDK 
+    # to handle parameter mapping (max_completion_tokens vs max_tokens)
+    if "OpenAI" in str(type(client)):
+        kwargs["max_tokens"] = max_tokens
+    else:
+        # Cerebras native client
+        kwargs["max_completion_tokens"] = max_tokens
+
+    response = client.chat.completions.create(**kwargs)
+
     if hasattr(response, 'choices') and response.choices:
         text = response.choices[0].message.content
         if text:
@@ -119,9 +144,34 @@ def _call_cerebras(prompt: str, model: str = "llama3.1-8b", temperature: float =
 
 def generate_completion(prompt: str, task_type: str = "script", temperature: float = 0.75, max_tokens: int = 3000) -> str:
     """
-    Generates text using a fallback cascade.
+    Generates text using a fallback cascade, retrying each model internally.
+    Then, if all models fail, retries the whole cascade again (up to 2 total cycles).
     task_type: "script" or "utility"
     """
+    
+    def try_model(name, call_fn, retries=2):
+        # Retry individual model logic
+        last_err = None
+        for attempt in range(1, retries + 1):
+            try:
+                log.info(f"[{task_type}] Trying {name} (attempt {attempt}/{retries})...")
+                result = call_fn()
+                
+                # Clean markdown code blocks if the model wrapped it
+                result = result.strip()
+                if result.startswith("```"):
+                    lines = result.split("\n")
+                    if len(lines) >= 2 and lines[-1].strip() == "```":
+                        result = "\n".join(lines[1:-1]).strip()
+                
+                return result
+            except Exception as e:
+                log.warning(f"[{task_type}] {name} attempt {attempt} failed: {e}")
+                last_err = e
+                if attempt < retries:
+                    time.sleep(2) # Backoff before retrying same model
+        raise last_err
+
     if task_type == "script":
         # Hierarchy: Gemini -> Groq -> Cerebras
         hierarchy = [
@@ -140,22 +190,19 @@ def generate_completion(prompt: str, task_type: str = "script", temperature: flo
         raise ValueError(f"Unknown task_type: {task_type}")
 
     last_error = None
-    for name, call_fn in hierarchy:
-        try:
-            log.info(f"[{task_type}] Trying {name}...")
-            result = call_fn()
+    
+    # We run the whole cascade up to 2 complete cycles
+    for cycle in range(1, 3):
+        if cycle > 1:
+            log.info(f"[{task_type}] All models failed in cycle {cycle-1}. Retrying full cascade (cycle {cycle}/2)...")
+            time.sleep(2) # brief pause between cycles
             
-            # Clean markdown code blocks if the model wrapped it (mostly for json/lists)
-            result = result.strip()
-            if result.startswith("```"):
-                lines = result.split("\n")
-                if len(lines) >= 2 and lines[-1].strip() == "```":
-                    result = "\n".join(lines[1:-1]).strip()
-            
-            return result
-        except Exception as e:
-            log.warning(f"[{task_type}] {name} failed: {e}")
-            last_error = e
-            time.sleep(2) # Short delay before fallback
+        for name, call_fn in hierarchy:
+            try:
+                # Internally retry each model twice before falling back to the next model
+                return try_model(name, call_fn, retries=2)
+            except Exception as e:
+                last_error = e
+                time.sleep(1) # Short delay before moving to the next model fallback
 
-    raise RuntimeError(f"All models failed for task '{task_type}'. Last error: {last_error}")
+    raise RuntimeError(f"All models failed for task '{task_type}' after 2 cascade cycles. Last error: {last_error}")

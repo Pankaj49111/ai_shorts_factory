@@ -1,5 +1,5 @@
 from faster_whisper import WhisperModel
-from moviepy import TextClip, CompositeVideoClip
+from moviepy import TextClip, CompositeVideoClip, ColorClip
 import moviepy.video.fx as vfx
 import os
 import re
@@ -46,8 +46,43 @@ IMPACT_WORDS = {
     "valuable", "important", "significant", "major", "unique", "original",
     "constant", "stable", "secure", "protected", "powerful", "weak", "gain", "loss"
 }
-IMPACT_COLOR = "yellow"
-IMPACT_FONT_SIZE_BUMP = 20
+
+# Cluster definitions for impact words
+CLUSTERS = {
+    "TECH_SECRETS": {
+        "words": {"ai", "data", "technology", "digital", "virtual", "code", "algorithm", "system", "quantum", "future"},
+        "bg_color": (0, 150, 255),  # Electric Blue
+    },
+    "BRAIN_SCIENCE": {
+        "words": {"brain", "memory", "mind", "psychology", "behavior"},
+        "bg_color": (128, 0, 128),  # Deep Purple
+    },
+    "BIOLOGY_NATURE": {
+        "words": {"human", "universe", "planet", "energy", "power", "alive", "dead", "die"},
+        "bg_color": (34, 139, 34),  # Forest Green
+    },
+    "SCIENCE": {
+        "words": {"scientists", "discovery", "research", "evidence", "theory", "experiment", "science", "proven", "discovered"},
+        "bg_color": (200, 0, 0),  # Classic Red
+    },
+    "VIRAL_FACTS": {
+        "words": {"money", "win", "lose", "crazy", "insane", "free", "fast", "secret", "viral", "million", "billion", "never", "always", "truth", "actually", "shocking", "incredible", "impossible", "warning", "danger", "hidden", "real", "fake", "strongest", "fastest", "smartest", "richest", "ancient", "mystery", "revealed", "fact", "unbelievable", "amazing", "terrifying", "critical", "essential", "vital", "ultimate", "breakthrough", "massive", "tiny", "only", "must", "forbidden", "exposed", "transform", "revolutionize", "create", "destroy", "profit", "wealth", "debt", "impact", "effect", "cause", "consequence", "solution", "problem", "challenge", "opportunity", "risk", "security", "effective", "efficient", "successful", "valuable", "important", "significant", "major", "unique", "original", "constant", "stable", "secure", "protected", "powerful", "weak", "gain", "loss"},  # Remaining words
+        "bg_color": (200, 0, 0),  # Classic Red
+    },
+}
+
+# The most trending Hormozi style right now:
+# - Normal words: White text with light gray background box.
+# - Impact words: White text WITH a colored background box based on cluster.
+IMPACT_COLOR = "white"    # White for impact words on colored backgrounds
+NORMAL_COLOR = "white"    # White for normal words on light gray background
+
+IMPACT_BG_OPACITY = 0.95  # Almost solid box for impact words
+
+NORMAL_BG_COLOR = (200, 200, 200)   # Light gray background for normal words
+NORMAL_BG_OPACITY = 0.8             # Semi-transparent for normal words
+
+IMPACT_FONT_SIZE_BUMP = 25
 
 # --- Mode Selection ---
 MODE_KARAOKE   = "karaoke"
@@ -95,25 +130,12 @@ def transcribe_audio(audio_path, model_size="base"):
 # Beast Mode Helpers
 # ---------------------------------------------------------------------------
 def _chunk_by_timing(words, max_gap=0.5, max_words=3):
+    # For a true MrBeast/Hormozi style, we want 1 word per chunk (or maybe 2 if very fast).
+    # We'll force 1 word per chunk for maximum pop impact.
     chunks = []
-    current = []
-
     for w in words:
-        if not current:
-            current.append(w)
-            continue
-
-        gap = w["start"] - current[-1]["end"]
-
-        if gap > max_gap or len(current) >= max_words:
-            chunks.append(current)
-            current = [w]
-        else:
-            current.append(w)
-
-    if current:
-        chunks.append(current)
-
+        chunks.append([w])
+    
     formatted_chunks = []
     for chunk in chunks:
         text = " ".join(w['text'] for w in chunk)
@@ -125,57 +147,101 @@ def _is_impact(text):
     text_words = [re.sub(r"\W", "", w.lower()) for w in text.split()]
     return any(w in IMPACT_WORDS for w in text_words)
 
-def _pop_effect(t):
-    return 1 + 0.15 if t < 0.1 else 1
+def _pop_effect(t, duration):
+    # A simple bounce effect: scales up to 1.15 in the first 0.1s, then back to 1.0
+    if t < 0.05:
+        return 1.0 + (t / 0.05) * 0.15 # scale up to 1.15
+    elif t < 0.15:
+        return 1.15 - ((t - 0.05) / 0.10) * 0.15 # scale down to 1.0
+    return 1.0
 
 def _make_beast_clips(words, font, video_size):
     if not words: return []
     chunks = _chunk_by_timing(words)
     clips = []
-    video_w, _ = video_size
-    for chunk in chunks:
-        # Slight timing tightening
-        start = chunk['start'] + 0.02
+    video_w, video_h = video_size
+    
+    # Calculate vertical position based on ratio
+    y_px = int(video_h * Y_POSITION)
+    
+    for i, chunk in enumerate(chunks):
+        start = chunk['start']
         end = chunk['end']
-        duration = end - start - 0.04
-        
-        if duration <= 0.05:
-            # Fallback if tightening made it too short
-            start = chunk['start']
-            duration = chunk['end'] - chunk['start']
-            if duration <= 0.05:
-                continue
-            
-        impact = _is_impact(chunk['text'])
-        txt = chunk['text'].upper() if impact else chunk['text']
+        # Get next start time to prevent overlap
+        next_start = chunks[i + 1]['start'] if i + 1 < len(chunks) else start + 10  # Large value for last word
+        # Extend duration slightly but cap at next start
+        base_duration = max(0.1, end - start + 0.02)
+        duration = min(base_duration, next_start - start)
+
+        cluster = _get_cluster(chunk['text'])
+        impact = cluster is not None
+        txt = chunk['text'].upper()
         fontsize = FONT_SIZE + IMPACT_FONT_SIZE_BUMP if impact else FONT_SIZE
-        color = IMPACT_COLOR if impact else "white"
-        
-        # Note: MoviePy 2 doesn't have .margin() on TextClip directly, wait for assembly if needed.
-        # But we can align it center safely
-        clip = TextClip(
+        color = IMPACT_COLOR if impact else NORMAL_COLOR
+        if impact:
+            bg_rgb = CLUSTERS[cluster]["bg_color"]
+            bg_opacity = IMPACT_BG_OPACITY
+        else:
+            bg_rgb = NORMAL_BG_COLOR
+            bg_opacity = NORMAL_BG_OPACITY
+
+        # 1. Create the TextClip
+        txt_clip = TextClip(
             text=txt, font=font, font_size=fontsize, color=color,
             stroke_color=STROKE_COLOR, stroke_width=STROKE_WIDTH, method="label", text_align="center"
         )
         
-        if clip.size[0] > video_w - 80:
-            scale_factor = (video_w - 80) / clip.size[0]
-            new_w = max(1, int(clip.size[0] * scale_factor))
-            new_h = max(1, int(clip.size[1] * scale_factor))
-            clip = clip.with_effects([vfx.Resize((new_w, new_h))])
+        # Scale if it's too wide
+        if txt_clip.size[0] > video_w - 100:
+            scale_factor = (video_w - 100) / txt_clip.size[0]
+            new_w = max(1, int(txt_clip.size[0] * scale_factor))
+            new_h = max(1, int(txt_clip.size[1] * scale_factor))
+            txt_clip = txt_clip.with_effects([vfx.Resize((new_w, new_h))])
             
-        final_clip = clip.with_position(("center", Y_POSITION), relative=True).with_start(start).with_duration(duration)
+        # 2. Create the Background Block (if opacity > 0)
+        padding_x = 40
+        padding_y = 20
+        bg_w = txt_clip.size[0] + padding_x
+        bg_h = txt_clip.size[1] + padding_y
         
-        if impact:
-            # using lambda t for dynamic scaling in moviepy v2 might be tricky without a proper generator
-            # applying simple pop via standard scale if supported, else skipping to avoid breaks
-            try:
-                 final_clip = final_clip.with_effects([vfx.Resize(lambda t: _pop_effect(t))])
-            except Exception:
-                 pass
+        if bg_opacity > 0:
+            bg_clip = ColorClip(
+                size=(bg_w, bg_h), 
+                color=bg_rgb
+            ).with_opacity(bg_opacity)
             
+            # 3. Composite them together into one container clip
+            comp = CompositeVideoClip(
+                [
+                    bg_clip.with_position("center"),
+                    txt_clip.with_position("center")
+                ],
+                size=(bg_w, bg_h)
+            )
+        else:
+            # No background box for normal words, just the text
+            comp = CompositeVideoClip(
+                [txt_clip.with_position("center")],
+                size=(bg_w, bg_h)
+            )
+        
+        # 4. Position the container on the main video and apply timing
+        final_clip = comp.with_position(("center", y_px)).with_start(start).with_duration(duration)
+        
+        # 5. Apply the "Pop" animation using moviepy v2 resize effect
+        # v2 Resize can take a lambda function returning a scale multiplier
+        final_clip = _apply_pop_effect(final_clip, duration)
+
         clips.append(final_clip)
+
     return clips
+
+def _apply_pop_effect(clip, duration):
+    try:
+        return clip.with_effects([vfx.Resize(lambda t: _pop_effect(t, duration))])
+    except Exception as e:
+        print(f"Warning: Could not apply pop effect: {e}")
+        return clip
 
 # ---------------------------------------------------------------------------
 # Original Grouping & Clip Builders
@@ -190,7 +256,7 @@ def _group_words(words, n=WORDS_PER_GROUP):
 def _is_power_word(text):
     return text.lower().strip(".,!?\"'") in POWER_WORDS
 
-def _row_composite(word_color_pairs, font, duration, start_time, frame_w=1080, frame_h=1920):
+def _row_composite(word_color_pairs, font, duration, start_time, frame_w=1080, frame_h=1920, apply_pop=True):
     word_clips, x_offset = [], 0
     for word_text, color in word_color_pairs:
         if not word_text.strip(): continue
@@ -211,7 +277,11 @@ def _row_composite(word_color_pairs, font, duration, start_time, frame_w=1080, f
             x_off = int(x_off * scale_factor)
         final_y = max(20, min(y_px - wc.size[1] // 2, frame_h - wc.size[1] - 20))
         positioned.append(wc.with_position((start_x + x_off, final_y)).with_duration(duration))
-    return CompositeVideoClip(positioned, size=(frame_w, frame_h)).with_duration(duration).with_start(start_time)
+    comp = CompositeVideoClip(positioned, size=(frame_w, frame_h)).with_duration(duration).with_start(start_time)
+    if apply_pop:
+        return _apply_pop_effect(comp, duration)
+    else:
+        return comp
 
 def _make_simple_clip(group, font):
     text = " ".join(w["text"] for w in group["words"])
@@ -224,7 +294,8 @@ def _make_simple_clip(group, font):
         new_w = max(1, int(wc.size[0] * scale_factor))
         new_h = max(1, int(wc.size[1] * scale_factor))
         wc = wc.with_effects([vfx.Resize((new_w, new_h))])
-    return wc.with_duration(duration).with_start(group["start"]).with_position(("center", 0.65), relative=True)
+    clip = wc.with_duration(duration).with_start(group["start"]).with_position(("center", 0.65), relative=True)
+    return clip
 
 def _make_karaoke_clips(group, font):
     clips, group_words = [], group["words"]
@@ -234,7 +305,7 @@ def _make_karaoke_clips(group, font):
         for i, w in enumerate(group_words):
             color = COLOR_KEYWORD if i == active_idx and _is_power_word(w["text"]) else COLOR_ACTIVE if i == active_idx else ("#666666" if w["probability"] < CONFIDENCE_THRESHOLD else COLOR_INACTIVE)
             pairs.append((w["text"], color))
-        clip = _row_composite(pairs, font, duration, active_word["start"])
+        clip = _row_composite(pairs, font, duration, active_word["start"], apply_pop=False)
         if clip: clips.append(clip)
     return clips
 
@@ -246,6 +317,13 @@ def _make_highlight_clips(group, font):
     pairs = [(w["text"], COLOR_KEYWORD if _is_power_word(w["text"]) else COLOR_ACTIVE) for w in group["words"]]
     clip = _row_composite(pairs, font, duration, group["start"])
     return [clip] if clip else []
+
+def _get_cluster(text):
+    word = re.sub(r"\W", "", text.lower())
+    for cluster, data in CLUSTERS.items():
+        if word in data["words"]:
+            return cluster
+    return None
 
 # ---------------------------------------------------------------------------
 # Main entry point
